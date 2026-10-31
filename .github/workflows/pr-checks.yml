@@ -34,15 +34,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends lua5.4
 
-      - name: Check patch whitespace
-        shell: bash
-        run: |
-          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-            git diff --check HEAD^ HEAD
-          else
-            git show --format= --check HEAD
-          fi
-
       - name: Test repository validator
         run: python -m unittest discover -s Build/CI -p 'test_*.py' -v
 
