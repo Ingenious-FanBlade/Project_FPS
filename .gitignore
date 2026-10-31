@@ -12,3 +12,7 @@ Saved
 *.suo
 *.xcodeproj
 *.xcworkspace
+
+# Python checks used by CI
+__pycache__/
+*.py[cod]

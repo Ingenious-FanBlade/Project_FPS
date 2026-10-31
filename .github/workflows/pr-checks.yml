@@ -1,0 +1,65 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-checks:
+    name: Repository checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          lfs: false
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install check tools
+        run: |
+          python -m pip install -r Build/CI/requirements.txt
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends lua5.4
+
+      - name: Check patch whitespace
+        shell: bash
+        run: |
+          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^ HEAD
+          else
+            git show --format= --check HEAD
+          fi
+
+      - name: Test repository validator
+        run: python -m unittest discover -s Build/CI -p 'test_*.py' -v
+
+      - name: Check project, documentation, YAML and Lua syntax
+        run: python Build/CI/check_repository.py
+
+      - name: Check PowerShell syntax
+        shell: pwsh
+        run: |
+          $scripts = Get-ChildItem -LiteralPath Build/CI -Filter '*.ps1' -Recurse -File
+          foreach ($script in $scripts) {
+            $parseErrors = $null
+            $tokens = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+          }
+          Write-Host "PowerShell syntax passed: $($scripts.Count) script(s)."
