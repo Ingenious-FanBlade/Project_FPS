@@ -1,0 +1,10 @@
+Paper model visual direction — reference v1
+Generated: 2026-10-31
+Generator: built-in image_gen
+Status: selected visual concept; not an Unreal Engine screenshot or implemented shader.
+
+Use case: stylized-concept.
+Asset type: a rough art-direction preview for a first-person multiplayer destruction game, NOT an actual engine screenshot.
+Create ONE landscape 16:9 image, not a collage. Comparable scene and framing across a three-image style study: first-person eye-level view at about 1.6 meters, moderately wide field of view, a small angular two-storey training courtyard. An ordinary unbranded rifle and hands occupy the lower-right foreground. The main midground wall has a large irregular blasted opening, showing the interior. A section of the upper floor has collapsed; several large angular fragments and smaller debris rest on the ground, with a few fragments still falling. Use clear daytime lighting, readable spatial depth and an unobstructed center view through the broken wall. The image should clearly show the material of intact surfaces, exposed fracture faces, debris, and the weapon so the rendering style can be judged. No people beyond the player's hands, no blood, no logos, no UI, no captions, no watermark, no text. Avoid photorealistic military marketing imagery.
+Style/medium: visibly three-dimensional handcrafted paper-and-cardboard scale models, viewed from INSIDE the model at human eye level, not a tabletop diorama photographed from above. Crisp planar folds, slightly imperfect cut edges, subtle paper fibers, restrained hand-painted surfaces, thin ink marks and printed seam lines. Fracture interiors expose believable layered paper/cardboard thickness and raw fibers. Keep convincing ambient occlusion, cast shadows and solid depth. Hand drawing is a secondary accent; physical folded-paper construction is the dominant impression. Avoid pervasive black comic outlines or a flat sketchbook appearance.
+
