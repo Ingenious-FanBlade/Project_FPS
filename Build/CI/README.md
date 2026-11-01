@@ -22,7 +22,7 @@
 | 自动化脚本 | Python 检查器的回归用例、PowerShell 语法 |
 | Lua | `Content/Script` 中项目脚本的 Lua 5.4 语法，不执行游戏逻辑 |
 
-目前尚未接入 UnLua、没有项目 Lua 脚本，Lua 检查会明确显示跳过。接入时固定 UnLua 的 Lua 版本；如使用其他 Lua 主次版本，必须同时修改工作流中的解释器安装项和检查器的版本校验。语法通过不证明 UE 绑定调用或脚本打包正确。
+目前已引入 UnLua 插件，但尚未发现 `Content/Script` 下的项目 Lua 脚本，Lua 检查会明确显示跳过。接入业务脚本时固定 UnLua 的 Lua 版本；如使用其他 Lua 主次版本，必须同时修改工作流中的解释器安装项和检查器的版本校验。语法通过不证明 UE 绑定调用或脚本打包正确。
 
 云端不编译 UE C++，不 Cook 资源，不验证材质、资产引用、联机行为及性能。YAML 检查只检查语法，不代替 GitHub 的工作流语义验证；文档检查不请求外部网址，也不验证页内标题锚点。完整项目验证仍在本地进行。
 
@@ -59,6 +59,6 @@ pwsh -NoProfile -File Build/CI/Build-Local.ps1 -EngineRoot 'D:\UE_Source\UE5.8.3
 
 ## 4. 后续接入点
 
-UnLua 接入后补上共享规则测试、两端脚本分发包加载检查；联机玩法完成后增加服务器与两个客户端的基本功能测试。Shader 画面与破坏性能在有 GPU 的本地环境验收。发布运行包时，客户端与服务器使用同一份已验证构建的产物。
+按[开发路线图](../../Docs/Design/00-overview.md#6-客户端与服务端开发路线图)推进：M1～M2 增加服务器与两个客户端的战斗、单局验证及共享规则测试；M3 增加大厅匹配往返与失败路径验收；M4～M5 在有 GPU 的本地环境完成 Shader、破坏性能及多机连续对局验收。大厅／匹配服务的构建与启动方式待选型后补充，当前脚本不负责部署它。发布运行包时，客户端与战斗服务器使用同一份已验证构建的产物，并同步提供匹配服务所需配置。
 
 参考：[GitHub PR 事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request)、[必需状态检查](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)、[UE Dedicated Server](https://dev.epicgames.com/documentation/en-us/unreal-engine/setting-up-dedicated-servers-in-unreal-engine)。
