@@ -18,7 +18,9 @@ public class Project_FPS : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"SlateCore",
+			"UnLua"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

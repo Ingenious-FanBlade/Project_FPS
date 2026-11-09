@@ -32,6 +32,7 @@ Source/
   Project_FPSEditor.Target.cs   Editor 构建目标
   Project_FPSServer.Target.cs   Dedicated Server 构建目标
 Content/                        地图、蓝图、角色、输入、武器和其他 UE 资源
+  Script/Client/UI/            客户端 Lua 界面显示流程；其余客户端、Server、Shared 目录按功能建立
 Config/                         引擎、游戏、输入与编辑器默认配置
 Plugins/
   UnLua/                        Lua 接入插件及所带 Lua
@@ -39,11 +40,12 @@ Plugins/
   UnLuaTestSuite/                UnLua 测试插件
 Docs/
   Design/                       玩法、客户端、服务端、破坏等设计及配套资产
+  API/                          当前实现层接口文档与模块索引
 Build/CI/                       仓库检查、本地打包脚本与使用说明
 .github/workflows/              PR 检查工作流
 ```
 
-- 后续业务 Lua 脚本按设计放在 `Content/Script/Client/`、`Server/`、`Shared/`，这些目录当前尚未建立。目录分组不等于已完成客户端／服务端打包隔离。
+- 业务 Lua 脚本按设计放在 `Content/Script/Client/`、`Server/`、`Shared/`；当前已建立 `Client/UI/`，`Server/` 与 `Shared/` 尚未建立。目录分组不等于已完成客户端／服务端打包隔离。
 - 功能模块是业务职责划分，不等同于独立 UE Runtime 模块、插件或进程；沿用当前单 Runtime 模块组织，避免无需求地拆分。
 - `Binaries/`、`Intermediate/`、`DerivedDataCache/`、`Saved/` 以及 IDE 缓存属于生成产物，不作为业务源码维护或提交。
 - 构建和检查入口见 [Build/CI/README.md](Build/CI/README.md)。
