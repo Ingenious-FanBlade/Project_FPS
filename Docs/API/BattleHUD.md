@@ -4,7 +4,7 @@
 
 本模块实现 F09-01 当前阶段范围内的准星、生命值与血条、弹匣／备用弹药、换弹状态与进度显示。C++ 创建原生 UMG 布局并提供只显示数据的更新接口，Lua 负责正式数据与开发预览之间的显示流程。
 
-- 调用方：本地 `AShooterPlayerController`，后续可由生命、武器和复制状态接收模块调用公开更新函数。
+- 调用方：本地 `AShooterPlayerController`；S1 起 `ABattlePlayerController` 迁移了同一组 HUD 接口（见第 8 节），后续由生命、武器和复制状态接收模块调用公开更新函数。
 - 执行端：拥有本地玩家的客户端；Dedicated Server 不创建控件。
 - 权威归属：本模块没有玩法权威，不扣血、不消耗弹药、不决定换弹开始或完成，也不发送 RPC。
 - 当前实现：原生控件、Lua 绑定、生命周期清理和本地预览已实现；UE 5.8.4 PIE 已观察到准星、生命和当前弹匣显示，模拟换弹流程及独立 Client／Server 包仍待验证。
@@ -28,6 +28,8 @@
 | `MaxHealth` | `float` | 最大生命值；小于 0 时按 0 显示 |
 
 当前 Shooter 模板只提供 `OnDamaged(float LifePercent)`。临时适配按设计基线 100 将比例换算为当前生命值；后续复制状态可直接调用本接口提供真实当前值和最大值。
+
+> **已知冲突（待与 F06 负责人对齐）**：当前模板角色 `AShooterCharacter::MaxHP` 为 `500`（`Source/Project_FPS/Variant_Shooter/ShooterCharacter.h`），与[玩法设计](../Design/01-gameplay.md)的生命值 `100` 冲突。本模块的 `OnPawnDamaged` 适配按 100 显示，不代表模板角色的真实血量比例。生命基线由 F06（生命、伤害、死亡与重生）统一处理；在 F06 接入前，该显示**不得**视为权威生命值。S1（F08-01）未改动任何生命字段。
 
 ### `UpdateBattleHUDAmmo(MagazineAmmo, ReserveAmmo)`
 
@@ -112,3 +114,15 @@ PIE 或本地游戏运行时可在控制台使用：
 | --- | --- | --- | --- |
 | 2026-11-08 | 新增 F09-01 基础 HUD、Lua 显示流程、本地预览与模板事件适配 | 新增三个正式显示入口和两个本地预览命令；无网络协议 | 仓库检查与可用编译环境结果见交付说明；UE 运行渲染待人工验证 |
 | 2026-11-09 | 修正 Controller 内部解绑辅助函数的参数命名，适配 UE 严格编译检查 | 对外契约不变 | UE 5.8.4 `Project_FPSEditor Win64 Development` 编译通过；PIE 已观察到准星、生命和当前弹匣显示，模拟换弹待验证 |
+| 2026-11-12 | S1 在 `ABattlePlayerController` 迁移同一组 HUD 接口与本地预览；补充模板 `MaxHP=500` 与设计 100 的冲突说明 | 新增 `ABattlePlayerController` 上的同名接口；模板控制器接口不变 | C++ 编译与仓库文本检查待执行；Battle 控制器上的 HUD 渲染待验证 |
+
+## 8. `ABattlePlayerController` 上的迁移接口
+
+S1（F08-01）为正式对战新建 `ABattlePlayerController`（继承 `AProject_FPSPlayerController`），迁移了 `EnsureBattleHUD`、`UpdateBattleHUDHealth/Ammo/Reload`、`HUDPreview`、`HUDPreviewState` 与输入映射上下文处理。契约与第 2、4 节一致：
+
+- 执行端：拥有本地玩家的客户端；Dedicated Server 不创建控件。
+- 权威归属：与模板控制器相同，不改变角色、武器或比赛状态，不发送 RPC。
+- 复用同一控件类 `UBattleHUDWidget` 与 `Content/Script/Client/UI/BattleHUD.lua`。
+- **未迁移** `AShooterPlayerController::OnPawnDestroyed` 的模板重生逻辑；重生由 F06-04 统一调度。`BeginPlay` 也不再写入模板的比例式生命伪数据。
+- 当前职责边界与绑定时机（`OnPossess` 订阅武器／生命事件）**未实现**，待 F05／F06 提供权威状态后接入。
+
