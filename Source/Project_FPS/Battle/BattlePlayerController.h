@@ -51,6 +51,15 @@ public:
 	UFUNCTION(Exec)
 	void HUDPreviewState(int32 StateIndex);
 
+	/**
+	 * 本地调试命令：模拟一次开火请求，走完整 Server_Fire 校验链。
+	 *
+	 * Exec 放在 PlayerController 上才能在窗口控制台被直接接收（Pawn 不是命令接收者）。
+	 * 实现仅在非 Shipping 构建中提供（见 BattlePlayerController.cpp）。
+	 */
+	UFUNCTION(Exec)
+	void BattleTestFire(int32 Count = 1);
+
 protected:
 
 	virtual void BeginPlay() override;

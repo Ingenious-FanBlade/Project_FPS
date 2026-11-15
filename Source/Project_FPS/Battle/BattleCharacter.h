@@ -68,9 +68,85 @@ protected:
 
 public:
 
+	//~Begin F05-03 权威开火
+
+	/**
+	 * 客户端开火请求。不可靠 Server RPC，仅由拥有者角色提交。
+	 *
+	 * @param ClientRoundId 客户端认为的当前 RoundId，服务器须与 GameState 比对。
+	 * @param ClientLifeId  客户端认为的当前 LifeId。**待 F06 接入后启用校验**，
+	 *                      当前客户端传 0 且服务器不校验，保留参数以固定签名。
+	 * @param ShotId        本生命期内单调递增的射击序号，用于去重。
+	 * @param AimViewOrigin 客户端视点起点，仅作合理性参考，不作为射线起点交由服务器查询。
+	 * @param AimViewDir    客户端瞄准方向，用于限流与参数合理性校验。
+	 */
+	UFUNCTION(Server, Unreliable)
+	void Server_Fire(int32 ClientRoundId, int32 ClientLifeId, int32 ShotId, FVector_NetQuantize AimViewOrigin, FVector_NetQuantizeNormal AimViewDir);
+
+	/** Server_Fire 的参数合法性检查。返回 false 会断连接，因此只拦截明显非法值。 */
+	bool Server_Fire_Validate(int32 ClientRoundId, int32 ClientLifeId, int32 ShotId, FVector_NetQuantize AimViewOrigin, FVector_NetQuantizeNormal AimViewDir);
+
+	/** 开火成功的表现通知。本阶段仅记录日志，待 F05-04／F05-02 接入表现。 */
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_FireEffect(int32 ShotId, FVector_NetQuantize MuzzleLocation);
+
+	//~End F05-03
+
+protected:
+
+	/** 开火拒绝原因，用于日志与后续诊断统计。 */
+	enum class EFireRejectReason : uint8
+	{
+		None,
+		NoAuthority,
+		RateLimited,
+		StaleRound,
+		PhaseDenied,
+		Dead,
+		NoWeapon,
+		Reloading,
+		NoAmmo,
+		RefireRate,
+		DuplicateShot,
+		BadAim,
+	};
+
+	/** 返回拒绝原因的可读文本。 */
+	static const TCHAR* GetFireRejectReasonText(EFireRejectReason Reason);
+
+	/** 返回服务器世界时间（秒）。 */
+	double GetServerTimeSeconds() const;
+
+	/** 完成开火后的权威射击处理。**F05-04 实现射线检测与伤害提交**，当前为空。 */
+	virtual void PerformAuthoritativeShot(int32 ShotId, const FVector& ViewOrigin, const FVector& ViewDir);
+
+	/** RPC 级最小间隔（秒）。与玩法射速校验相互独立。 */
+	UPROPERTY(EditDefaultsOnly, Category = "Battle|Fire")
+	float MinRpcInterval = 0.05f;
+
+	/** 最近一次处理开火 RPC 的服务器时间，用于请求限流。 */
+	double LastRpcServerTime = -1.0;
+
+public:
+
 	/** 返回武器组件，始终有效。 */
 	UFUNCTION(BlueprintPure, Category = "Battle|Weapon")
 	UBattleWeaponComponent* GetWeaponComponent() const { return WeaponComponent; }
+
+public:
+
+	/**
+	 * 本地调试：由拥有者客户端触发一次开火请求，走完整 Server_Fire 校验链。
+	 *
+	 * 仅供 ABattlePlayerController::BattleTestFire 调用；实现仅在非 Shipping
+	 * 构建中提供（见 BattleCharacter.cpp）。Shipping 构建中调用会链接失败。
+	 */
+	void DebugTriggerFire();
+
+private:
+
+	/** 本地调试用的 ShotId 计数器。 */
+	int32 DebugShotIdCounter = 1;
 
 public:
 
