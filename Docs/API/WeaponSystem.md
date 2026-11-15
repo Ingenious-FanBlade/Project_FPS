@@ -144,6 +144,13 @@
 | `AimViewOrigin` | `FVector_NetQuantize` | 客户端视点起点，仅作合理性参考；不作为射线起点 |
 | `AimViewDir` | `FVector_NetQuantizeNormal` | 客户端瞄准方向，须接近单位长度 |
 
+**RoundId 来源约束（客户端）**：`ClientRoundId` 必须取自复制的 `ABattleGameState::GetRoundIdentity().RoundId`。
+
+- **不得从 GameMode 读取**：`AGameModeBase` 只存在于服务器，客户端 `GetWorld()->GetAuthGameMode()` 恒为 `nullptr`，读到的会是默认值 0，导致服务端按 `StaleRound` 拒绝。
+- 获取方式：`GetWorld()->GetGameState<ABattleGameState>()`，判空后再读 `RoundIdentity.RoundId`。
+- 若 GameState 尚未同步（值为 0），客户端应**中止本次请求并提示等待**，不得发送 0 占位值。
+- 该约束同样适用于 F05-02 客户端本地射击与后续任何携带 RoundId 的请求。
+
 - 可靠性：**不可靠**（可丢包），依据[服务端设计](../Design/03-server.md#4-操作请求与同步)"单次步枪开火使用拥有者角色的 Server RPC，不可靠"。
 - 权限：仅拥有者角色可提交；调用方必须是该 Pawn 的拥有者客户端。
 - 校验函数 `Server_Fire_Validate` 只拦截会导致服务器异常的值（负数、NaN、超大坐标）；返回 `false` 会断开连接，因此行为级拒绝不使用它。
@@ -218,39 +225,111 @@
 
 `InitializeAmmo` 会同时调用 `ResetFireState()`，保证新生命期重新开始射速与去重记录。
 
-### 7.6 为 F05-04 预留的调用点
+### 7.6 `PerformAuthoritativeShot` 调用点
 
 `ABattleCharacter::PerformAuthoritativeShot(int32 ShotId, const FVector& ViewOrigin, const FVector& ViewDir)`：
 
-- `protected virtual`，当前为空实现，只有 `TODO(F05-04)` 注释。
-- 在校验链全部通过、完成扣弹与 `Multicast_FireEffect` 之后调用一次。
-- F05-04 只需在此函数内实现射线与伤害提交，**不修改 RPC 签名、不修改校验链**。
+- `protected virtual`，在校验链全部通过、完成扣弹与 `Multicast_FireEffect` 之后调用一次。
+- F05-04 在此实现射线检测；**不修改 RPC 签名、不修改校验链**。详见第 8 节。
 
-## 8. Lua 接入
+## 8. F05-04 射线命中与反馈
+
+### 8.1 实现状态
+
+- 已实现：服务器权威射线、命中解析、`FBattleShotResult` 参数准备、诊断日志。
+- **未实现**：伤害提交（F06）、友军过滤（F06-02）、距离衰减、部位倍率、命中反馈 Multicast（F09-03）。
+
+### 8.2 射线参数
+
+| 项 | 取值 | 说明 |
+| --- | --- | --- |
+| 起点 | 服务器第一人称相机位置；无相机时退化为角色位置 | **不采用客户端 `AimViewOrigin`**，依据[服务端设计](../Design/03-server.md#5-战斗校验)"射击起点由服务器构造，不能直接信任客户端任意坐标" |
+| 方向 | 控制器 `GetControlRotation()`；无控制器时用角色朝向 | **不采用客户端 `AimViewDir`** |
+| 终点 | `起点 + 方向 * MaxRange` | `MaxRange` 取自 `UBattleWeaponDefinition`，缺失时回退 `10000` cm |
+| 通道 | `ECC_Visibility` | 项目无自定义 `Weapon` 通道；`Projectile` 通道（`ECC_GameTraceChannel1`）为 `bTraceType=False`，不能用于射线 |
+| 忽略 | `AddIgnoredActor(this)` | 忽略射击者自身 |
+| 查询参数 | `SCENE_QUERY_STAT(BattleAuthoritativeShot)` | 便于性能分析定位 |
+
+客户端传入的 `AimViewOrigin`／`AimViewDir` 只在校验链第 12 步做合理性检查，**不参与命中判定**。
+
+### 8.3 命中解析
+
+| 命中对象 | 判定 | 处理 |
+| --- | --- | --- |
+| `ABattleCharacter`（其他玩家） | `Cast<ABattleCharacter>` 成功且非自身 | 填充 `FBattleShotResult`，记录日志，TODO 提交 F06 |
+| 非战斗 Actor（环境、道具） | 转换失败 | 只记日志，不产生伤害 |
+| 无命中 | `!bBlockingHit` | 记日志"no hit" |
+
+命中其他玩家时日志包含：`ShotId`、`RoundId`、受害者名、双方 `TeamId`、伤害值、命中点、骨骼名。
+
+### 8.4 `FBattleShotResult`（定义于 `BattleTypes.h`）
+
+跨 F05／F06 的通信契约，不复制、不持久化，只在服务器侧构造并传递。字段见[比赛状态](MatchState.md)类型章节或源码 `BattleTypes.h`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ShotId` | `int32` | 射击序号，关联表现与日志 |
+| `RoundId` | `int32` | 射击发生时的对局序号 |
+| `Shooter` | `AActor*` | 射击者 |
+| `Victim` | `AActor*` | 被击中的战斗角色，未命中为 `nullptr` |
+| `VictimLifeId` | `int32` | **待 F06 填充**，当前恒 `0` |
+| `BaseDamage` | `float` | 数据资产基础伤害 |
+| `FinalDamage` | `float` | 最终伤害，当前 = `BaseDamage` |
+| `bBlockingHit` | `bool` | 是否命中可阻挡表面 |
+| `HitLocation` | `FVector` | 命中点；未命中时为射线终点 |
+| `HitBoneName` | `FName` | 命中骨骼名，[预留] 首版不区分倍率 |
+
+### 8.5 为 F06 预留的伤害提交点
+
+`PerformAuthoritativeShot` 末尾保留：
+
+```cpp
+// TODO(F06): 在此调用 F06 的统一伤害提交接口，参数为 Result。
+```
+
+并输出 `Warning` 级日志 `TODO(F06) damage submission not implemented; no health changed.`。
+
+F06 接入要求：
+
+- 伤害入口负责**存活校验、重生保护、友军过滤、死亡唯一结算**，F05 不重复实现这些规则。
+- `Result.RoundId` 用于拒绝跨局迟到的伤害提交。
+- `Result.VictimLifeId` 需在 F06 提供 LifeId 后填充，用于拒绝旧生命期的伤害。
+
+### 8.6 反馈
+
+`Multicast_FireEffect` 保持现状（日志占位），枪口、声音与开火动画的表现接入属 F05-02。命中反馈属 F09-03，依赖 F06 的权威伤害结果，本阶段不新增。
+
+## 9. Lua 接入
 
 M1／S3 阶段规则由 C++ 实现。Lua 规则接入点（开火、换弹、伤害决策）**未实现**，且需要先完成 Dedicated Server 上的 UnLua 运行验证，标注为**待验证**。
 
-## 9. 未实现与待验证
+## 10. 未实现与待验证
 
 | 项 | 状态 |
 | --- | --- |
 | 开火请求与本地预测（F05-02） | 未实现；`ShotId` 生成与输入绑定属 F05-02 |
-| 权威开火校验与编号去重（F05-03） | **已实现**（见第 8 节）；LifeId 校验待 F06 |
-| 服务器射线、命中、伤害提交、开火／命中反馈（F05-04） | 未实现；`PerformAuthoritativeShot` 为空实现 |
+| 权威开火校验与编号去重（F05-03） | **已实现**（见第 7 节）；LifeId 校验待 F06 |
+| 服务器射线与命中解析（F05-04） | **已实现**（见第 8 节）；起点与方向均取服务器数据 |
+| 伤害提交（F05-04 → F06） | **未实现**；`FBattleShotResult` 已备好，`PerformAuthoritativeShot` 末尾为 TODO 占位 |
+| 友军过滤、距离衰减、部位倍率 | 未实现；属 F06-02 与玩法数值，F05 不重复实现 |
+| 命中反馈 Multicast | 未实现；属 F09-03，依赖 F06 权威伤害结果 |
+| `VictimLifeId` 填充 | 未实现；待 F06 提供 LifeId |
 | 换弹开始／结束、弹药转移、中断（F05-05） | 未实现；`IsReloading` 只读占位恒为 `false` |
 | 存活校验（F06） | 占位为存活，恒不拒绝 |
 | `Multicast_FireEffect` 的实际表现 | 当前仅日志，无声音／动画／枪口效果 |
-| 武器 Actor 自身是否复制 | **未决**，由 F05-04 决定 |
+| 武器 Actor 自身是否复制 | 保持不复制；玩家弹道改为服务器射线后，武器 Actor 仅承担表现 |
 | 数据资产实例 | 需在编辑器创建（C++ 类无默认资产） |
 | 双端装备与弹药复制 | 待验证 |
 | Dedicated Server 上的装备与开火流程 | 待验证 |
-| `BattleTestFire` 验证限流／去重／扣弹 | 待验证（仅非 Shipping 构建） |
+| `BattleTestFire` 验证限流／去重／扣弹 | **已验证**（Development 构建，双端 PIE） |
+| 射线命中日志与实际命中结果 | 待验证 |
 
-## 10. 变更记录
+## 11. 变更记录
 
 | 日期 | 变更 | 接口影响 | 验证状态 |
 | --- | --- | --- | --- |
 | 2026-11-15 | 新建 F05-01：数据资产、武器组件、角色复制开启、出生装备与权威弹药初始化 | 新增 `UBattleWeaponDefinition`、`UBattleWeaponComponent`；`ABattleCharacter` 新增 `WeaponDefinition`／`WeaponComponent`／`EquipFromDefinition`；无 RPC | C++ 编译与仓库文本检查待执行；双端装备与弹药复制待验证 |
 | 2026-11-15 | 新增 F05-03 权威开火：`Server_Fire` 不可靠 RPC、13 项校验链、权威扣弹、`Multicast_FireEffect` 占位、`PerformAuthoritativeShot` 空实现、`BattleTestFire` 调试命令 | 新增 `Server_Fire`／`Multicast_FireEffect`／`Server_Fire_Validate`；`ConsumeAmmo`／`RecordAcceptedShot`／`ResetFireState`；`ClientLifeId` 参数已固定但暂不校验 | C++ 编译与仓库文本检查待执行；限流、去重、扣弹待 `BattleTestFire` 验证 |
-| 2026-11-15 | 修正 `BattleTestFire` 的 `UFUNCTION` 预处理位置：声明移出 `#if`，实现保留在 `#if !UE_BUILD_SHIPPING` 中 | 对外接口不变；Shipping 构建与 Development 构建的可见性差异见 7.2 节 | UHT 编译错误修复，待重新编译验证 |
+| 2026-11-15 | 新增 F05-04 服务器权威射线与命中解析：`GetServerShotOrigin`／`GetServerShotDirection`、`ECC_Visibility` 单线检测、`FBattleShotResult` 参数准备、F06 伤害提交占位；`FBattleShotResult` 定义于 `BattleTypes.h` | 新增 `FBattleShotResult`（跨 F05／F06 契约，未复制）；`ABattleCharacter` 新增两个 protected 查询函数；`PerformAuthoritativeShot` 由空实现变为射线实现；RPC 签名与校验链不变 | C++ 编译与仓库文本检查待执行；命中日志待验证 |
+| 2026-11-15 | 补充 `ClientRoundId` 来源约束：必须取自复制的 `ABattleGameState`，不得从 GameMode 读取 | 契约说明补充，无代码变更 | F05-03 双端验证通过（RoundId=1 双方一致、扣弹正常、Multicast 双端接收） |
 | 2026-11-15 | `BattleTestFire` 从 `ABattleCharacter` 移到 `ABattlePlayerController`（Exec 需挂在 PC 上才能被控制台接收）；新增 `ABattleCharacter::DebugTriggerFire()`；拒绝日志由 `Verbose` 提升为 `Warning` | 新增 `ABattlePlayerController::BattleTestFire`、`ABattleCharacter::DebugTriggerFire`；移除 `ABattleCharacter::BattleTestFire` | 待编译与 PIE 验证 |

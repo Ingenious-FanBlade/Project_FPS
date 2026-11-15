@@ -4,11 +4,14 @@
 #include "Battle/BattleGameMode.h"
 #include "Battle/BattleGameState.h"
 #include "Battle/BattlePlayerState.h"
+#include "Battle/BattleTypes.h"
 #include "Battle/Components/BattleWeaponComponent.h"
 #include "Battle/Data/BattleWeaponDefinition.h"
+#include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/World.h"
+#include "InputAction.h"
 #include "Project_FPS.h"
 #include "ShooterWeapon.h"
 
@@ -35,10 +38,34 @@ void ABattleCharacter::BeginPlay()
 
 void ABattleCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
+	// 方案②以 C++ 类直接启动，没有蓝图实例可配置基类的输入动作；
+	// 若不在绑定前赋值，基类 BindAction 会收到 nullptr 并静默跳过，表现为无法移动与观察。
+	if (!MoveAction)
+	{
+		MoveAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/Actions/IA_Move.IA_Move"));
+	}
+	if (!LookAction)
+	{
+		LookAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/Actions/IA_Look.IA_Look"));
+	}
+	if (!MouseLookAction)
+	{
+		MouseLookAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/Actions/IA_MouseLook.IA_MouseLook"));
+	}
+	if (!JumpAction)
+	{
+		JumpAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/Actions/IA_Jump.IA_Jump"));
+	}
+
+	if (!MoveAction || !LookAction || !MouseLookAction || !JumpAction)
+	{
+		UE_LOG(LogProject_FPS, Error, TEXT("%s: failed to load default input actions from /Game/Input/Actions."), *GetName());
+	}
+
 	// 基类负责移动、观察与跳跃的绑定。
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
-	// TODO(S3-F05-03): 绑定 FireAction 到服务器开火请求入口。
+	// TODO(S3-F02/F05-02): 绑定 FireAction 到本地开火流程。
 }
 
 void ABattleCharacter::EquipFromDefinition()
@@ -392,13 +419,107 @@ void ABattleCharacter::Multicast_FireEffect_Implementation(int32 ShotId, FVector
 		*GetName(), ShotId, *MuzzleLocation.ToString(), IsLocallyControlled() ? TEXT("yes") : TEXT("no"));
 }
 
+FVector ABattleCharacter::GetServerShotOrigin() const
+{
+	// 设计约束（03-server.md:102）：射击起点由服务器构造，不采用客户端坐标。
+	// 优先使用服务器上的第一人称相机；Dedicated Server 无渲染时退化为角色位置。
+	if (const UCameraComponent* Camera = GetFirstPersonCameraComponent())
+	{
+		return Camera->GetComponentLocation();
+	}
+
+	return GetActorLocation();
+}
+
+FVector ABattleCharacter::GetServerShotDirection() const
+{
+	// 方向同样取服务器侧：优先控制旋转，其次角色朝向。
+	if (GetController())
+	{
+		return GetController()->GetControlRotation().Vector();
+	}
+
+	return GetActorForwardVector();
+}
+
 void ABattleCharacter::PerformAuthoritativeShot(int32 ShotId, const FVector& ViewOrigin, const FVector& ViewDir)
 {
-	// TODO(F05-04): 在此执行服务器射线查询、命中筛选，并把伤害提交给 F06。
-	// TODO(F05-04): 射线起点须由服务器角色／视点数据构造，参考 ViewOrigin 但不直接采用。
-	(void)ShotId;
+	// 执行端保护：本函数只在服务器侧有效。
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// 客户端瞄准参数仅作参考，不参与命中判定；此处只记录偏差供诊断。
 	(void)ViewOrigin;
 	(void)ViewDir;
+
+	const UBattleWeaponDefinition* Definition = GetWeaponDefinition();
+	const float BaseDamage = Definition ? Definition->DamagePerShot : 25.0f;
+	const float MaxRange = Definition ? Definition->MaxRange : 10000.0f;
+
+	FBattleShotResult Result;
+	Result.ShotId = ShotId;
+	Result.Shooter = this;
+	Result.BaseDamage = BaseDamage;
+	Result.FinalDamage = BaseDamage;
+
+	const ABattleGameMode* BattleGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ABattleGameMode>() : nullptr;
+	Result.RoundId = BattleGameMode ? BattleGameMode->GetRoundIdentity().RoundId : 0;
+
+	// 起点与方向均取自服务器，忽略客户端传入值。
+	const FVector Start = GetServerShotOrigin();
+	const FVector Direction = GetServerShotDirection().GetSafeNormal();
+	const FVector End = Start + Direction * MaxRange;
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(BattleAuthoritativeShot), false, this);
+	QueryParams.AddIgnoredActor(this);
+
+	FHitResult Hit;
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, QueryParams);
+
+	Result.bBlockingHit = bHit;
+	Result.HitLocation = bHit ? Hit.ImpactPoint : End;
+	Result.HitBoneName = bHit ? Hit.BoneName : NAME_None;
+
+	if (!bHit)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PerformShot ShotId=%d: no hit (range %.0f)"), ShotId, MaxRange);
+		return;
+	}
+
+	ABattleCharacter* HitCharacter = Cast<ABattleCharacter>(Hit.GetActor());
+	if (!HitCharacter || HitCharacter == this)
+	{
+		// 命中环境或非战斗对象：本阶段不产生伤害。
+		UE_LOG(LogTemp, Warning, TEXT("PerformShot ShotId=%d: hit non-battle actor %s at %s"),
+			ShotId, *GetNameSafe(Hit.GetActor()), *Hit.ImpactPoint.ToString());
+		return;
+	}
+
+	Result.Victim = HitCharacter;
+
+	const ABattlePlayerState* ShooterPlayerState = GetPlayerState<ABattlePlayerState>();
+	const ABattlePlayerState* VictimPlayerState = HitCharacter->GetPlayerState<ABattlePlayerState>();
+
+	// TeamId 仅用于日志核对；友军过滤属 F06-02，本阶段不做拦截。
+	const int32 ShooterTeam = ShooterPlayerState ? static_cast<int32>(ShooterPlayerState->GetTeam()) : 0;
+	const int32 VictimTeam = VictimPlayerState ? static_cast<int32>(VictimPlayerState->GetTeam()) : 0;
+
+	// LifeId 待 F06 生成；当前恒为 0。
+	// TODO(F06): 填充 Result.VictimLifeId = HitCharacter 的当前生命期序号。
+	Result.VictimLifeId = 0;
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("PerformShot ShotId=%d RoundId=%d: hit %s (ShooterTeam=%d VictimTeam=%d) damage=%.1f at %s bone=%s"),
+		ShotId, Result.RoundId, *GetNameSafe(HitCharacter), ShooterTeam, VictimTeam,
+		Result.FinalDamage, *Hit.ImpactPoint.ToString(), *Result.HitBoneName.ToString());
+
+	// TODO(F06): 在此调用 F06 的统一伤害提交接口，参数为 Result。
+	//            具体要求：伤害入口负责存活/保护/友军过滤，并只结算一次死亡。
+	UE_LOG(LogTemp, Warning,
+		TEXT("PerformShot ShotId=%d: TODO(F06) damage submission not implemented; no health changed."),
+		ShotId);
 }
 
 //~End F05-03
