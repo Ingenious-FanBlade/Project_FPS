@@ -182,3 +182,4 @@ StartCountdownSeconds=5.000000
 | 日期 | 变更 | 接口影响 | 验证状态 |
 | --- | --- | --- | --- |
 | 2026-11-12 | 新建 F08-01 M1 比赛状态：阶段枚举、RoundId、复制属性与 RepNotify、阶段许可查询、M1 直连联调配置 | 新增 4 个 Battle 类与上述接口；无客户端请求型 RPC | C++ 编译与仓库文本检查待执行；联机复制待验证 |
+| 2026-11-15 | S3 F05-01 完成前置项 1：`ABattleCharacter` 已开启 `bReplicates`，并新增武器组件与出生装备 | 本模块契约不变；`ABattleCharacter` 复制能力变化见 [武器系统](WeaponSystem.md) | C++ 编译与仓库文本检查待执行 |

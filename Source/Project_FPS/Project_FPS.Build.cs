@@ -27,6 +27,9 @@ public class Project_FPS : ModuleRules
 
 		PublicIncludePaths.AddRange(new string[] {
 			"Project_FPS",
+			"Project_FPS/Battle",
+			"Project_FPS/Battle/Components",
+			"Project_FPS/Battle/Data",
 			"Project_FPS/Variant_Horror",
 			"Project_FPS/Variant_Horror/UI",
 			"Project_FPS/Variant_Shooter",
