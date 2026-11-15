@@ -8,7 +8,7 @@
 | 比赛状态（F08-01） | [MatchState.md](MatchState.md) | M1 最小实现：比赛阶段枚举、RoundId、阶段截止时间、阶段 RepNotify 与阶段许可查询。比分、胜负、结算、重置、分队、匹配均为 M2／M3 预留，未实现 |
 | 玩家公共状态（F08-01） | [PlayerState.md](PlayerState.md) | M1 复制字段：队伍、击杀、死亡。`SetTeam` 已提供；分队流程与击杀／死亡写入属 M2，未实现 |
 
-| 武器与弹药（F05-01 / F05-03） | [WeaponSystem.md](WeaponSystem.md) | F05-01：数据资产、角色复制、出生装备与权威弹药组件。F05-03：`Server_Fire` 校验链、权威扣弹、表现通知占位。F05-02/04/05 未实现 |
+| 武器与弹药（F05-01 / F05-03 / F05-04 / F05-05） | [WeaponSystem.md](WeaponSystem.md) | F05-01：数据资产、角色复制、出生装备与权威弹药组件。F05-03：`Server_Fire` 校验链与权威扣弹。F05-04：服务器射线与命中解析，伤害提交待 F06。F05-05：`Server_Reload` 校验链、计时、弹药转移与中断。F05-02 表现层未实现 |
 
 | 战斗 HUD 与反馈 | [BattleHUD.md](BattleHUD.md) | F09-01 基础布局和 F09-03 反馈显示层、本地预览已实现；权威备用弹药、换弹、命中、死亡与保护数据仍待 F05/F06 接入，F09-03 联机验收未完成 |
 

@@ -176,6 +176,27 @@ void ABattlePlayerController::BattleTestFire(int32 Count)
 	}
 }
 
+void ABattlePlayerController::BattleTestReload()
+{
+	UE_LOG(LogTemp, Warning, TEXT("TestReload: PC Called. LocalController=%s"),
+		IsLocalController() ? TEXT("yes") : TEXT("no"));
+
+	if (!IsLocalController())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestReload: not a local controller, aborting."));
+		return;
+	}
+
+	ABattleCharacter* BattleCharacter = GetPawn<ABattleCharacter>();
+	if (!BattleCharacter)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestReload: no ABattleCharacter possessed, aborting."));
+		return;
+	}
+
+	BattleCharacter->DebugTriggerReload();
+}
+
 void ABattlePlayerController::EnsureBattleHUD()
 {
 	if (!IsLocalPlayerController() || GetNetMode() == NM_DedicatedServer || IsValid(BattleHUD) || !BattleHUDClass)

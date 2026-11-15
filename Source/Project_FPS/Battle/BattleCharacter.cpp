@@ -14,6 +14,7 @@
 #include "InputAction.h"
 #include "Project_FPS.h"
 #include "ShooterWeapon.h"
+#include "TimerManager.h"
 
 ABattleCharacter::ABattleCharacter()
 {
@@ -252,6 +253,9 @@ const TCHAR* ABattleCharacter::GetFireRejectReasonText(EFireRejectReason Reason)
 	case EFireRejectReason::RefireRate:    return TEXT("RefireRate");
 	case EFireRejectReason::DuplicateShot: return TEXT("DuplicateShot");
 	case EFireRejectReason::BadAim:        return TEXT("BadAim");
+	case EFireRejectReason::AlreadyReloading: return TEXT("AlreadyReloading");
+	case EFireRejectReason::MagazineFull:     return TEXT("MagazineFull");
+	case EFireRejectReason::NoReserveAmmo:    return TEXT("NoReserveAmmo");
 	default:                               return TEXT("Unknown");
 	}
 }
@@ -524,6 +528,216 @@ void ABattleCharacter::PerformAuthoritativeShot(int32 ShotId, const FVector& Vie
 
 //~End F05-03
 
+//~Begin F05-05 换弹
+
+void ABattleCharacter::EndPlay(EEndPlayReason::Type EndPlayReason)
+{
+	// 角色销毁（死亡、重生、切图）时清理换弹计时器与状态，避免旧计时器继续执行。
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ReloadTimer);
+	}
+
+	// 递增代次，任何仍在排队的回调都会因代次不匹配而失效。
+	++ReloadGeneration;
+
+	if (HasAuthority() && WeaponComponent && WeaponComponent->IsReloading())
+	{
+		WeaponComponent->CancelReload();
+	}
+
+	Super::EndPlay(EndPlayReason);
+}
+
+bool ABattleCharacter::Server_Reload_Validate(int32 ClientRoundId, int32 ClientLifeId, int32 ReloadRequestId)
+{
+	// 只拦截会导致服务器异常的值；返回 false 会断开连接。
+	return ClientRoundId >= 0 && ClientLifeId >= 0 && ReloadRequestId >= 0;
+}
+
+void ABattleCharacter::Server_Reload_Implementation(int32 ClientRoundId, int32 ClientLifeId, int32 ReloadRequestId)
+{
+	const auto Reject = [this, ReloadRequestId](EFireRejectReason Reason)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("%s: reload rejected RequestId=%d reason=%s"),
+			*GetName(), ReloadRequestId, GetFireRejectReasonText(Reason));
+	};
+
+	// 1. 权威归属。
+	if (!HasAuthority())
+	{
+		Reject(EFireRejectReason::NoAuthority);
+		return;
+	}
+
+	ABattlePlayerState* BattlePlayerState = GetPlayerState<ABattlePlayerState>();
+	ABattleGameMode* BattleGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ABattleGameMode>() : nullptr;
+	if (!BattlePlayerState || !BattleGameMode)
+	{
+		Reject(EFireRejectReason::NoAuthority);
+		return;
+	}
+
+	// 2. 幂等去重：同一或更旧的请求编号直接忽略，避免重复开始换弹。
+	//    可靠 RPC 可能重复投递，这里静默丢弃，不视为错误。
+	if (WeaponComponent && ReloadRequestId <= WeaponComponent->GetLastAcceptedReloadId())
+	{
+		return;
+	}
+
+	// 3. RoundId 校验。
+	const FBattleRoundIdentity RoundIdentity = BattleGameMode->GetRoundIdentity();
+	if (ClientRoundId != RoundIdentity.RoundId)
+	{
+		Reject(EFireRejectReason::StaleRound);
+		return;
+	}
+
+	// 4. LifeId 校验：待 F06 接入后启用。
+	// TODO(F06): 生成 LifeId 后比对 ClientLifeId 与当前生命期。
+	(void)ClientLifeId;
+
+	// 5. 阶段校验：复用与开火相同的阶段许可。
+	if (!BattleGameMode->CanAttack(BattlePlayerState))
+	{
+		Reject(EFireRejectReason::PhaseDenied);
+		return;
+	}
+
+	// 6. 存活校验：F06 未实现，占位为存活。
+	// TODO(F06): 改为读取权威存活状态。
+	const bool bIsAlivePlaceholder = true;
+	if (!bIsAlivePlaceholder)
+	{
+		Reject(EFireRejectReason::Dead);
+		return;
+	}
+
+	// 7. 武器可用校验。
+	if (!WeaponComponent || !IsValid(WeaponComponent->GetCurrentWeapon()))
+	{
+		Reject(EFireRejectReason::NoWeapon);
+		return;
+	}
+
+	// 8. 已在换弹：不实现主动取消，重复请求一律拒绝。
+	if (WeaponComponent->IsReloading())
+	{
+		Reject(EFireRejectReason::AlreadyReloading);
+		return;
+	}
+
+	// 9. 弹匣已满。
+	const UBattleWeaponDefinition* Definition = GetWeaponDefinition();
+	const int32 MagazineSize = Definition ? Definition->MagazineSize : 30;
+	if (WeaponComponent->GetMagazineAmmo() >= MagazineSize)
+	{
+		Reject(EFireRejectReason::MagazineFull);
+		return;
+	}
+
+	// 10. 备用弹药不足。
+	if (WeaponComponent->GetReserveAmmo() <= 0)
+	{
+		Reject(EFireRejectReason::NoReserveAmmo);
+		return;
+	}
+
+	// 全部通过：提交换弹开始、记录请求编号并启动计时。
+	const double ServerTime = GetServerTimeSeconds();
+	const float ReloadDuration = Definition ? FMath::Max(0.1f, Definition->ReloadDuration) : 2.0f;
+
+	WeaponComponent->BeginReload(ServerTime);
+	WeaponComponent->RecordAcceptedReload(ReloadRequestId);
+
+	ActiveReloadRequestId = ReloadRequestId;
+	const int32 CurrentGeneration = ++ReloadGeneration;
+
+	if (UWorld* World = GetWorld())
+	{
+		FTimerDelegate Delegate;
+		Delegate.BindUObject(this, &ABattleCharacter::OnReloadCompleted, CurrentGeneration);
+		World->GetTimerManager().SetTimer(ReloadTimer, Delegate, ReloadDuration, false);
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Server_Reload: started RequestId=%d duration=%.2f Ammo=%d/%d"),
+		ReloadRequestId, ReloadDuration, WeaponComponent->GetMagazineAmmo(), WeaponComponent->GetReserveAmmo());
+
+	Multicast_ReloadEffect(ReloadRequestId, true, ServerTime);
+}
+
+void ABattleCharacter::OnReloadCompleted(int32 Generation)
+{
+	// 过期计时器：期间发生过中断或新一轮换弹，直接丢弃。
+	if (Generation != ReloadGeneration)
+	{
+		return;
+	}
+
+	if (!HasAuthority() || !WeaponComponent)
+	{
+		return;
+	}
+
+	// 防御：状态可能已被其他路径清理。
+	if (!WeaponComponent->IsReloading())
+	{
+		return;
+	}
+
+	const UBattleWeaponDefinition* Definition = GetWeaponDefinition();
+	const int32 MagazineSize = Definition ? Definition->MagazineSize : 30;
+
+	// 换满为止；备弹不足时抽干备弹。
+	const int32 NeededAmount = FMath::Max(0, MagazineSize - WeaponComponent->GetMagazineAmmo());
+	const int32 LoadAmount = FMath::Min(NeededAmount, WeaponComponent->GetReserveAmmo());
+
+	WeaponComponent->CompleteReload(LoadAmount);
+
+	UE_LOG(LogTemp, Warning, TEXT("Reload Completed: Mag=%d, Reserve=%d"),
+		WeaponComponent->GetMagazineAmmo(), WeaponComponent->GetReserveAmmo());
+
+	UE_LOG(LogTemp, Warning, TEXT("Server_Reload: completed RequestId=%d loaded=%d Ammo=%d/%d"),
+		ActiveReloadRequestId, LoadAmount, WeaponComponent->GetMagazineAmmo(), WeaponComponent->GetReserveAmmo());
+
+	Multicast_ReloadEffect(ActiveReloadRequestId, false, 0.0);
+	ActiveReloadRequestId = -1;
+}
+
+void ABattleCharacter::InterruptReload(const FString& Reason)
+{
+	if (!HasAuthority() || !WeaponComponent || !WeaponComponent->IsReloading())
+	{
+		return;
+	}
+
+	// 递增代次使任何排队的完成回调失效。
+	++ReloadGeneration;
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ReloadTimer);
+	}
+
+	// 中断不转移任何弹药，保持原子性。
+	WeaponComponent->CancelReload();
+
+	UE_LOG(LogTemp, Warning, TEXT("%s: reload interrupted RequestId=%d reason=%s"),
+		*GetName(), ActiveReloadRequestId, *Reason);
+
+	Multicast_ReloadEffect(ActiveReloadRequestId, false, 0.0);
+	ActiveReloadRequestId = -1;
+}
+
+void ABattleCharacter::Multicast_ReloadEffect_Implementation(int32 ReloadRequestId, bool bStarted, double ServerStartTime)
+{
+	// TODO(F05-02): 播放换弹动画与音效，按 ReloadRequestId 去重；进度用 ServerStartTime 与数据资产时长插值。
+	UE_LOG(LogTemp, Warning, TEXT("%s: reload effect RequestId=%d started=%s startTime=%.2f"),
+		*GetName(), ReloadRequestId, bStarted ? TEXT("true") : TEXT("false"), ServerStartTime);
+}
+
+//~End F05-05
+
 #if !UE_BUILD_SHIPPING
 
 void ABattleCharacter::DebugTriggerFire()
@@ -572,6 +786,41 @@ void ABattleCharacter::DebugTriggerFire()
 	// 客户端调用，由引擎路由到服务器。
 	Server_Fire(ClientRoundId, 0, ShotId,
 		FVector_NetQuantize(ViewOrigin), FVector_NetQuantizeNormal(ViewDir));
+}
+
+void ABattleCharacter::DebugTriggerReload()
+{
+	UE_LOG(LogTemp, Warning, TEXT("DebugTriggerReload: Character called. LocalControlled=%s Authority=%s"),
+		IsLocallyControlled() ? TEXT("yes") : TEXT("no"),
+		HasAuthority() ? TEXT("yes") : TEXT("no"));
+
+	if (!IsLocallyControlled())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DebugTriggerReload: not locally controlled, aborting."));
+		return;
+	}
+
+	const int32 ReloadRequestId = ++DebugReloadRequestIdCounter;
+
+	// 与开火一致：RoundId 取自复制的 GameState，LifeId 待 F06 接入前传 0。
+	const UWorld* World = GetWorld();
+	const ABattleGameState* BattleGameState = World ? World->GetGameState<ABattleGameState>() : nullptr;
+	if (!BattleGameState)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DebugTriggerReload: ABattleGameState not available yet. Aborting."));
+		return;
+	}
+
+	const int32 ClientRoundId = BattleGameState->GetRoundIdentity().RoundId;
+	UE_LOG(LogTemp, Warning, TEXT("DebugTriggerReload: Client RoundId: %d RequestId=%d"), ClientRoundId, ReloadRequestId);
+
+	if (ClientRoundId <= 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DebugTriggerReload: RoundId not replicated yet (got %d)."), ClientRoundId);
+		return;
+	}
+
+	Server_Reload(ClientRoundId, 0, ReloadRequestId);
 }
 
 #endif
