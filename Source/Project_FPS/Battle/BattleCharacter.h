@@ -57,6 +57,9 @@ protected:
 	/** 出生装备：仅服务器按配置生成武器并初始化弹药。 */
 	virtual void BeginPlay() override;
 
+	/** 清理换弹计时器，避免角色销毁后旧计时器继续执行。 */
+	virtual void EndPlay(EEndPlayReason::Type EndPlayReason) override;
+
 	/** 绑定射击输入。F05-03 接入开火请求入口。 */
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
@@ -94,7 +97,7 @@ public:
 
 protected:
 
-	/** 开火拒绝原因，用于日志与后续诊断统计。 */
+	/** 开火与换弹的拒绝原因，用于日志与后续诊断统计。既有值不得改动。 */
 	enum class EFireRejectReason : uint8
 	{
 		None,
@@ -109,6 +112,11 @@ protected:
 		RefireRate,
 		DuplicateShot,
 		BadAim,
+
+		// F05-05 换弹新增
+		AlreadyReloading,
+		MagazineFull,
+		NoReserveAmmo,
 	};
 
 	/** 返回拒绝原因的可读文本。 */
@@ -135,6 +143,48 @@ protected:
 
 public:
 
+	//~Begin F05-05 换弹
+
+	/**
+	 * 客户端换弹请求。**可靠** Server RPC（低频请求），仅由拥有者角色提交。
+	 *
+	 * @param ClientRoundId     客户端认为的当前 RoundId，须与 GameState 比对。
+	 * @param ClientLifeId      客户端认为的当前 LifeId。**待 F06 接入后启用校验**，当前传 0。
+	 * @param ReloadRequestId   本生命期内递增的换弹请求编号，用于幂等去重。
+	 */
+	UFUNCTION(Server, Reliable)
+	void Server_Reload(int32 ClientRoundId, int32 ClientLifeId, int32 ReloadRequestId);
+
+	/** Server_Reload 的参数合法性检查。返回 false 会断连接，因此只拦截明显非法值。 */
+	bool Server_Reload_Validate(int32 ClientRoundId, int32 ClientLifeId, int32 ReloadRequestId);
+
+	/** 换弹状态变化的表现通知。本阶段仅记录日志，动画与进度属 F05-02／F09。 */
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_ReloadEffect(int32 ReloadRequestId, bool bStarted, double ServerStartTime);
+
+	/**
+	 * 中断换弹。执行端：仅服务器。
+	 * 供 F06（死亡/重生）与比赛阶段结束等外部条件调用；中断不转移任何弹药。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Battle|Reload")
+	void InterruptReload(const FString& Reason);
+
+protected:
+
+	/** 换弹完成回调。Generation 用于识别过期计时器。 */
+	void OnReloadCompleted(int32 Generation);
+
+	/** 换弹计时器。 */
+	FTimerHandle ReloadTimer;
+
+	/** 换弹计时器代次，每次开始或中断递增，防止旧计时器误触发。 */
+	int32 ReloadGeneration = 0;
+
+	/** 当前换弹请求编号，用于 Multicast 与日志关联。 */
+	int32 ActiveReloadRequestId = -1;
+
+public:
+
 	/** 返回武器组件，始终有效。 */
 	UFUNCTION(BlueprintPure, Category = "Battle|Weapon")
 	UBattleWeaponComponent* GetWeaponComponent() const { return WeaponComponent; }
@@ -149,10 +199,16 @@ public:
 	 */
 	void DebugTriggerFire();
 
+	/** 本地调试：由拥有者客户端触发一次换弹请求，走完整 Server_Reload 校验链。 */
+	void DebugTriggerReload();
+
 private:
 
 	/** 本地调试用的 ShotId 计数器。 */
 	int32 DebugShotIdCounter = 1;
+
+	/** 本地调试用的换弹请求编号计数器。 */
+	int32 DebugReloadRequestIdCounter = 1;
 
 public:
 

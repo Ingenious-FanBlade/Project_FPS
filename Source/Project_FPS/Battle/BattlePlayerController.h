@@ -60,6 +60,10 @@ public:
 	UFUNCTION(Exec)
 	void BattleTestFire(int32 Count = 1);
 
+	/** 本地调试命令：模拟一次换弹请求，走完整 Server_Reload 校验链。 */
+	UFUNCTION(Exec)
+	void BattleTestReload();
+
 protected:
 
 	virtual void BeginPlay() override;

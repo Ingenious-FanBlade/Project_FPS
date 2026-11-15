@@ -82,17 +82,45 @@ public:
 
 public:
 
-	//~Begin 为 F05-03/04/05 预留的只读状态访问（写入逻辑未实现，见 Docs/API/WeaponSystem.md）
+	//~Begin F05-05 换弹的服务器提交接口
 
-	/** 是否正在换弹。F05-05 写入。 */
+	/**
+	 * 标记换弹开始。执行端：仅服务器，非权威调用直接返回 false。
+	 * 不判断是否可换弹，只提交状态；条件判断由 ABattleCharacter 的校验链负责。
+	 */
+	bool BeginReload(double ServerTime);
+
+	/**
+	 * 完成换弹：按 LoadAmount 从备用弹药转移到弹匣，并清除换弹状态。
+	 * 执行端：仅服务器，非权威调用直接返回 false。
+	 * @return 实际转移的子弹数；调用方应保证已通过服务端预计算。
+	 */
+	int32 CompleteReload(int32 LoadAmount);
+
+	/** 中断换弹：清除换弹状态，不转移任何弹药。执行端：仅服务器。 */
+	void CancelReload();
+
+	/** 返回服务器已接受的最大换弹请求编号，用于幂等去重。-1 表示本生命期尚未换弹。 */
+	int32 GetLastAcceptedReloadId() const { return LastAcceptedReloadId; }
+
+	/** 记录一次被接受的换弹请求编号。执行端：仅服务器。 */
+	void RecordAcceptedReload(int32 ReloadRequestId);
+
+	//~End F05-05
+
+public:
+
+	//~Begin 换弹状态只读访问（F05-05 写入，客户端读取用于表现）
+
+	/** 是否正在换弹。 */
 	UFUNCTION(BlueprintPure, Category = "Battle Weapon")
 	bool IsReloading() const { return bIsReloading; }
 
-	/** 换弹开始时的服务器时间（秒）。F05-05 写入，供客户端插值进度。 */
+	/** 换弹开始时的服务器时间（秒）。供客户端插值进度。 */
 	UFUNCTION(BlueprintPure, Category = "Battle Weapon")
 	double GetReloadStartServerTime() const { return ReloadStartServerTime; }
 
-	//~End 预留状态
+	//~End 换弹状态
 
 protected:
 
@@ -108,11 +136,11 @@ protected:
 	UPROPERTY(Replicated)
 	int32 ReserveAmmo = 0;
 
-	/** 换弹状态占位。[F05-05 预留] 当前恒为 false。 */
+	/** 换弹状态。由 F05-05 的 BeginReload／CompleteReload／CancelReload 写入。 */
 	UPROPERTY(Replicated)
 	bool bIsReloading = false;
 
-	/** 换弹开始服务器时间占位。[F05-05 预留] 当前恒为 0。 */
+	/** 换弹开始时的服务器时间（秒）。换弹结束时清零。 */
 	UPROPERTY(Replicated)
 	double ReloadStartServerTime = 0.0;
 
@@ -121,6 +149,9 @@ protected:
 
 	/** 已接受的最大 ShotId。-1 表示本生命期尚未开火。不复制，仅服务器使用。 */
 	int32 LastAcceptedShotId = -1;
+
+	/** 已接受的最大换弹请求编号。-1 表示本生命期尚未换弹。不复制，仅服务器使用。 */
+	int32 LastAcceptedReloadId = -1;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 };
