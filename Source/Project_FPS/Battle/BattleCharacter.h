@@ -117,8 +117,14 @@ protected:
 	/** 返回服务器世界时间（秒）。 */
 	double GetServerTimeSeconds() const;
 
-	/** 完成开火后的权威射击处理。**F05-04 实现射线检测与伤害提交**，当前为空。 */
+	/** 完成开火后的权威射击处理。执行端：仅服务器。实现射线检测，伤害提交待 F06。 */
 	virtual void PerformAuthoritativeShot(int32 ShotId, const FVector& ViewOrigin, const FVector& ViewDir);
+
+	/** 返回服务器侧射线起点，不采用客户端坐标。 */
+	FVector GetServerShotOrigin() const;
+
+	/** 返回服务器侧射线方向，不采用客户端坐标。 */
+	FVector GetServerShotDirection() const;
 
 	/** RPC 级最小间隔（秒）。与玩法射速校验相互独立。 */
 	UPROPERTY(EditDefaultsOnly, Category = "Battle|Fire")

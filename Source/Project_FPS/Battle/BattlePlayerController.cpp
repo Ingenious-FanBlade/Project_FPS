@@ -4,8 +4,6 @@
 
 #include "Battle/BattleCharacter.h"
 #include "BattleHUDWidget.h"
-#include "EnhancedInputSubsystems.h"
-#include "Engine/LocalPlayer.h"
 #include "InputMappingContext.h"
 #include "Project_FPS.h"
 #include "ShooterBulletCounterUI.h"
@@ -48,6 +46,34 @@ void ABattlePlayerController::EndPlay(EEndPlayReason::Type EndPlayReason)
 
 void ABattlePlayerController::SetupInputComponent()
 {
+	// 方案②以 C++ 类直接启动，没有蓝图实例配置映射上下文；
+	// 若 DefaultMappingContexts 为空，Subsystem 不会添加任何 IMC，输入动作无法触发。
+	if (DefaultMappingContexts.Num() == 0)
+	{
+		if (UInputMappingContext* DefaultContext = LoadObject<UInputMappingContext>(
+				nullptr, TEXT("/Game/Input/IMC_Default.IMC_Default")))
+		{
+			DefaultMappingContexts.Add(DefaultContext);
+		}
+		else
+		{
+			UE_LOG(LogProject_FPS, Error, TEXT("%s: failed to load IMC_Default."), *GetName());
+		}
+	}
+
+	if (MobileExcludedMappingContexts.Num() == 0)
+	{
+		if (UInputMappingContext* MouseLookContext = LoadObject<UInputMappingContext>(
+				nullptr, TEXT("/Game/Input/IMC_MouseLook.IMC_MouseLook")))
+		{
+			MobileExcludedMappingContexts.Add(MouseLookContext);
+		}
+		else
+		{
+			UE_LOG(LogProject_FPS, Error, TEXT("%s: failed to load IMC_MouseLook."), *GetName());
+		}
+	}
+
 	Super::SetupInputComponent();
 
 	if (!IsLocalPlayerController())
@@ -55,21 +81,8 @@ void ABattlePlayerController::SetupInputComponent()
 		return;
 	}
 
-	if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(GetLocalPlayer()))
-	{
-		for (UInputMappingContext* CurrentContext : DefaultMappingContexts)
-		{
-			Subsystem->AddMappingContext(CurrentContext, 0);
-		}
-
-		if (!ShouldUseTouchControls())
-		{
-			for (UInputMappingContext* CurrentContext : MobileExcludedMappingContexts)
-			{
-				Subsystem->AddMappingContext(CurrentContext, 0);
-			}
-		}
-	}
+	// 映射上下文的 AddMappingContext 已由基类 SetupInputComponent 完成；
+	// 子类只负责在此前填好数组，不重复添加同一 IMC。
 
 	if (ShouldUseTouchControls() && !IsValid(MobileControlsWidget))
 	{

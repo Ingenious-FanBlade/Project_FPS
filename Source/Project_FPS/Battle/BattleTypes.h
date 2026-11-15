@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
 #include "BattleTypes.generated.h"
 
 /**
@@ -101,4 +102,59 @@ struct FBattleLifeId
 	{
 		return RoundId == Round.RoundId;
 	}
+};
+
+/**
+ * 一次权威射击的结果，用于 F05-04（射线命中）向 F06（伤害提交）传递参数。
+ *
+ * 跨模块契约：字段名与含义一旦被 F06 消费，不得随意改动；新增字段只追加。
+ * 不复制、不持久化，只在服务器侧（PerformAuthoritativeShot 内）构造并传递。
+ */
+USTRUCT(BlueprintType)
+struct FBattleShotResult
+{
+	GENERATED_BODY()
+
+	/** 本次射击的客户端序号，用于关联同一次开火的表现与日志。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	int32 ShotId = 0;
+
+	/** 射击发生时的对局序号，提交伤害时据此拒绝跨局结果。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	int32 RoundId = 0;
+
+	/** 射击者。服务器侧对象，不参与复制。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	TObjectPtr<AActor> Shooter = nullptr;
+
+	/** 被击中的战斗角色；未命中或命中非战斗角色时为 nullptr。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	TObjectPtr<AActor> Victim = nullptr;
+
+	/** 被击中者的生命期序号。**待 F06 接入后填充**，当前恒为 0。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	int32 VictimLifeId = 0;
+
+	/** 数据资产中的基础伤害，未经衰减或倍率处理。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	float BaseDamage = 0.0f;
+
+	/** 本次射击的最终伤害。当前等于 BaseDamage（无距离衰减、无部位倍率）。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	float FinalDamage = 0.0f;
+
+	/** 是否命中可阻挡表面。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	bool bBlockingHit = false;
+
+	/** 命中点（未命中时为射线终点）。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	FVector HitLocation = FVector::ZeroVector;
+
+	/** 命中骨骼名。[预留] 首版不区分头部倍率，F06 接入时按玩法文档决定是否使用。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Battle|Shot")
+	FName HitBoneName;
+
+	/** 是否命中了可受伤的战斗角色（即 Victim 有效）。 */
+	bool HasVictim() const { return Victim != nullptr; }
 };
