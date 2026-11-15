@@ -2,12 +2,12 @@
 
 ## 1. 模块职责与状态
 
-本模块实现 F09-01 当前阶段范围内的准星、生命值与血条、弹匣／备用弹药、换弹状态与进度显示。C++ 创建原生 UMG 布局并提供只显示数据的更新接口，Lua 负责正式数据与开发预览之间的显示流程。
+本模块实现 F09-01 当前阶段范围内的准星、生命值与血条、弹匣／备用弹药、换弹状态与进度显示，并提供 F09-03 的命中、受伤、死亡倒计时及重生保护显示层。C++ 创建原生 UMG 布局并提供只显示数据的更新接口，Lua 负责正式数据与开发预览之间的显示流程。
 
 - 调用方：本地 `AShooterPlayerController`；S1 起 `ABattlePlayerController` 迁移了同一组 HUD 接口（见第 8 节），后续由生命、武器和复制状态接收模块调用公开更新函数。
 - 执行端：拥有本地玩家的客户端；Dedicated Server 不创建控件。
 - 权威归属：本模块没有玩法权威，不扣血、不消耗弹药、不决定换弹开始或完成，也不发送 RPC。
-- 当前实现：原生控件、Lua 绑定、生命周期清理和本地预览已实现；UE 5.8.4 PIE 已观察到准星、生命和当前弹匣显示，模拟换弹流程及独立 Client／Server 包仍待验证。
+- 当前实现：F09-03 原生控件、Lua 显示流程和本地预览已加入；命中确认、权威死亡截止时间和重生保护数据仍待 F05/F06 接入，因此 F09-03 联机验收未完成。此前 UE 5.8.4 PIE 已观察到 F09-01 准星、生命和当前弹匣显示；新增画面仍待本次验证。
 - 设计依据：[客户端设计](../Design/02-client.md)、[玩法设计](../Design/01-gameplay.md)。
 
 相关源码：
@@ -59,6 +59,28 @@ PlayerController->UpdateBattleHUDReload(bReloading, ReloadProgress);
 
 ## 3. Lua 与原生控件契约
 
+### F09-03 显示入口
+
+以下同样是本地 `AShooterPlayerController` 的 `BlueprintCallable`、无返回值入口，不发送 RPC、不改变生命或重生状态。仅拥有者客户端创建 HUD；Dedicated Server 调用不会创建控件。
+
+| 入口 | 输入及含义 | 调用约束 |
+| --- | --- | --- |
+| `UpdateBattleHUDHitConfirmed()` | 无 | 仅在 F05 的服务器确认命中事件经过调用方去重后触发；重复调用会重启本地 0.35 秒标记 |
+| `UpdateBattleHUDDamageFeedback()` | 无 | 仅在 F06 的权威受伤事件经过调用方去重后触发；重复调用会重启本地 0.6 秒红色提示 |
+| `UpdateBattleHUDDeath(bIsDead, RemainingSeconds)` | `bool` 死亡状态；`float` 距服务器确认重生时刻的剩余秒数，非负、有限 | 调用方从服务器时间和截止时刻计算并持续刷新；`false` 隐藏提示；显示层不自行决定重生 |
+| `UpdateBattleHUDProtection(bProtected, RemainingSeconds)` | `bool` 保护状态；`float` 距服务器确认保护结束时刻的剩余秒数，非负、有限 | 调用方从服务器时间和截止时刻计算并持续刷新；`false` 隐藏提示；显示层不自行决定保护取消 |
+
+新入口目前没有正式 F05/F06 调用方。当前模板 `OnDamaged(float LifePercent)` 仍只驱动生命条，不触发服务器确认的命中、受伤或保护提示。时间值只有当前输入的显示意义；正式状态应在服务器通知、倒计时刷新及结束时继续传入。调用方负责按 `RoundId`、`LifeId`、Pawn 和事件编号过滤旧局、旧生命期与重复通知；本接口暂不携带这些标识。
+
+最小接入示例（待 F05/F06 实现，不代表当前已接线）：
+
+```cpp
+// 在权威事件已确认且标识检查通过后，由拥有者客户端调用。
+PlayerController->UpdateBattleHUDHitConfirmed();
+PlayerController->UpdateBattleHUDDeath(true, ServerRespawnRemainingSeconds);
+PlayerController->UpdateBattleHUDProtection(false, 0.0f);
+```
+
 `UBattleHUDWidget` 实现 `IUnLuaInterface`，模块名固定为 `Client.UI.BattleHUD`，对应 `Content/Script/Client/UI/BattleHUD.lua`。
 
 Lua 接收 `BP_ReceiveHealthState`、`BP_ReceiveAmmoState` 和 `BP_ReceiveReloadState`，缓存正式数据，并调用以下 C++ 渲染端点：
@@ -66,8 +88,13 @@ Lua 接收 `BP_ReceiveHealthState`、`BP_ReceiveAmmoState` 和 `BP_ReceiveReload
 - `SetHealthDisplay(float CurrentHealth, float MaxHealth)`
 - `SetAmmoDisplay(int32 MagazineAmmo, int32 ReserveAmmo)`
 - `SetReloadDisplay(bool bIsReloading, float NormalizedProgress)`
+- `SetHitDisplay(bool bVisible)`、`SetDamageDisplay(float Opacity)`
+- `SetDeathDisplay(bool bIsDead, float RemainingSeconds)`、`SetProtectionDisplay(bool bProtected, float RemainingSeconds)`
+
+F09-03 的 Lua 接收事件为 `BP_ReceiveHitConfirmed`、`BP_ReceiveDamageFeedback`、`BP_ReceiveDeathState`、`BP_ReceiveProtectionState` 和 `BP_ResetCombatFeedback`。命中与受伤是本地短暂表现；死亡与保护状态只由外部刷新，Lua 不推断权威状态变化。受伤透明度在显示端限制到 `0..0.35`，倒计时显示不小于 0 秒。
 
 上述渲染端点只更新文本、颜色、可见性和进度条。准星由 C++ 原生布局固定在视口中心；生命面板锚定左下角，弹药面板锚定右下角。
+重生保护面板锚定顶部中央，距视口顶部 104 个 UMG 布局单位，避开 Shooter 模板顶部的比分显示。
 
 ## 4. 开发预览
 
@@ -78,26 +105,36 @@ Lua 接收 `BP_ReceiveHealthState`、`BP_ReceiveAmmoState` 和 `BP_ReceiveReload
 bEnableBattleHUDPreview=False
 ```
 
-PIE 或本地游戏运行时可在控制台使用：
+PIE 或本地游戏运行时可在控制台使用。每次重新启动 PIE 后预览默认关闭，必须先输入 `HUDPreview 1`，再输入 `HUDPreviewState <编号>`；单独输入状态命令不会开启预览，也不会在控制台打印结果。
 
 | 命令 | 效果 |
 | --- | --- |
 | `HUDPreview 1` | 启用本地预览 |
 | `HUDPreview 0` | 关闭预览并恢复最近一次正式数据 |
-| `HUDPreviewState 0` | 自动循环满血、受伤、低弹药和换弹 |
+| `HUDPreviewState 0` | 自动循环下列 1～9 状态 |
 | `HUDPreviewState 1` | 固定显示满血与 `30 / 90` 弹药 |
 | `HUDPreviewState 2` | 固定显示受伤与弹药变化 |
 | `HUDPreviewState 3` | 固定显示低弹匣状态 |
 | `HUDPreviewState 4` | 固定显示循环换弹进度 |
+| `HUDPreviewState 5` | 固定显示受伤红色提示 |
+| `HUDPreviewState 6` | 固定显示命中标记 |
+| `HUDPreviewState 7` | 模拟 3 秒死亡倒计时 |
+| `HUDPreviewState 8` | 模拟 1.5 秒重生保护提示 |
+| `HUDPreviewState 9` | 模拟重生后的正常 HUD |
 
 预览数据只存在于本地控件的 Lua 实例中，不调用正式更新源、不修改 Pawn／Weapon，不发送网络请求或 RPC。多个 PIE 本地玩家各自持有独立控件与 Lua 实例。
+
+`HUDPreview 1` 只覆盖画面；期间受到的真实伤害仍由模板角色计算和缓存。输入 `HUDPreview 0` 后显示实际生命值，例如此前受伤至 70 时会显示 `70 / 100`，不是预览扣血。预览中的 3 秒死亡倒计时也不会触发角色重生。
 
 ## 5. 生命周期、时序与错误处理
 
 - `EnsureBattleHUD` 仅允许本地 PlayerController 且非 Dedicated Server 创建一个 HUD，重复调用不会重复创建。
 - `OnPossess` 使用唯一动态绑定订阅模板角色事件；`OnUnPossess`、Pawn 销毁与 Controller `EndPlay` 都移除绑定。
+- Shooter 模板的死亡计时器到期后，角色先保存 Controller 和角色类，再销毁旧 Pawn 并显式调用 Controller 的 `RespawnTemplateCharacter`。UE 5.8 在 Pawn 的 `OnDestroyed` 广播前已解除占有，因此不能依赖该广播触发重生。Controller 优先使用本队标记的 PlayerStart，若没有则使用地图中的任意 PlayerStart；角色类未配置时回退到旧 Pawn 的类。此兼容路径仍是模板本地重生，不是 F06 的权威重生调度。
 - `EndPlay` 从视口移除 HUD 和触控控件；Widget 销毁时停止 Lua 显示流程。
 - 角色销毁时清空弹药显示并隐藏换弹提示；新 Pawn 重新绑定模板事件。
+- Pawn 切换、销毁和 Controller 结束时重置 F09-03 的短暂表现、死亡和保护状态；新 Pawn 接管后由未来的权威状态接收方重新填充。预览开启期间重置正式状态，不改变当前预览帧；关闭预览后恢复最新正式状态。
+- 命中与受伤在预览开启时不进入正式表现缓存；预览关闭时清除预览的短暂效果。死亡与保护的正式数据在预览期间仍缓存，关闭预览时恢复。
 - 无效的控件类或创建失败只记录本地错误日志，不影响服务器权威状态。
 - 当前接口不包含 `MatchId`、`RoundId` 或 `LifeId`。调用方在后续接入异步／复制状态时必须先过滤旧生命期、旧回合和旧 Pawn 的迟到数据，本显示接口不会自行判断数据新旧。
 
@@ -106,7 +143,7 @@ PIE 或本地游戏运行时可在控制台使用：
 - 旧 `BulletCounterUIClass` 属性保留为弃用兼容字段，Controller 不再创建旧 `UI_ShooterBulletCounter`，避免与新 HUD 重叠。
 - 项目显式启用仓库内现有 UnLua 2.3.6，并在 Runtime 模块中增加 UnLua、SlateCore 依赖；未升级引擎或插件。
 - 仓库文本、JSON、Lua 语法和 C++ 编译结果以本次变更的交付记录为准。
-- UE 中的控件实际渲染、不同窗口尺寸、多 PIE 与独立服务器行为在完成相应运行验证前均标记为待验证。
+- 本次新增的 F09-03 控件实际渲染、不同窗口尺寸、多 PIE 与独立服务器行为在完成相应运行验证前均标记为待验证。
 
 ## 7. 变更记录
 
@@ -126,3 +163,6 @@ S1（F08-01）为正式对战新建 `ABattlePlayerController`（继承 `AProject
 - **未迁移** `AShooterPlayerController::OnPawnDestroyed` 的模板重生逻辑；重生由 F06-04 统一调度。`BeginPlay` 也不再写入模板的比例式生命伪数据。
 - 当前职责边界与绑定时机（`OnPossess` 订阅武器／生命事件）**未实现**，待 F05／F06 提供权威状态后接入。
 
+| 2026-11-14 | 增加 F09-03 显示入口、Lua 短暂反馈、本地预览和 Pawn 生命周期清理 | 新增四个本地显示入口，无网络协议；正式事件调用方待 F05/F06 | UE 5.8.4 Editor Development 编译及 Lua 5.4.3 语法／流程检查通过；仓库检查仅因缺少 `luac5.4` 未通过；新增画面与双客户端权威联调待验证 |
+| 2026-11-15 | 修复模板角色死亡后未重生；说明关闭预览后恢复实际生命值 | F09-03 显示入口不变；模板重生改为死亡计时器显式调用 Controller，补充无队伍出生点的回退 | UE 5.8.4 Editor Development 编译通过；用户确认实际死亡后重新生成并恢复控制，日志出现 `Template respawn possessed`；新增反馈的完整预览仍待验证 |
+| 2026-11-15 | 下移重生保护面板，避开顶部比分 | 对外契约不变；仅布局纵向位置由 32 调整为 104 | UE 5.8.4 Editor Development 编译通过；用户确认 PIE 中布局调整可用 |

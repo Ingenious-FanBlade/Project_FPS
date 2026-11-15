@@ -8,6 +8,7 @@
 #include "BattleHUDWidget.generated.h"
 
 class UCanvasPanel;
+class UBorder;
 class UProgressBar;
 class UTextBlock;
 
@@ -35,10 +36,17 @@ public:
 	/** Pass externally owned reload state into the Lua display flow. */
 	void ReceiveReloadState(bool bIsReloading, float NormalizedProgress);
 
+	/** Pass confirmed, presentation-only combat feedback into Lua. */
+	void ReceiveHitConfirmed();
+	void ReceiveDamageFeedback();
+	void ReceiveDeathState(bool bIsDead, float RemainingSeconds);
+	void ReceiveProtectionState(bool bProtected, float RemainingSeconds);
+	void ResetCombatFeedback();
+
 	/** Enable or disable the local-only development preview. */
 	void SetDevelopmentPreviewEnabled(bool bEnabled);
 
-	/** Select 0 for automatic cycling or 1-4 for a fixed preview state. */
+	/** Select 0 for automatic cycling or 1-9 for a fixed preview state. */
 	void SetDevelopmentPreviewState(int32 StateIndex);
 
 	/** Native render endpoint used by Lua. */
@@ -52,6 +60,18 @@ public:
 	/** Native render endpoint used by Lua. */
 	UFUNCTION(BlueprintCallable, Category="Battle HUD|Display")
 	void SetReloadDisplay(bool bIsReloading, float NormalizedProgress);
+
+	UFUNCTION(BlueprintCallable, Category="Battle HUD|Display")
+	void SetHitDisplay(bool bVisible);
+
+	UFUNCTION(BlueprintCallable, Category="Battle HUD|Display")
+	void SetDamageDisplay(float Opacity);
+
+	UFUNCTION(BlueprintCallable, Category="Battle HUD|Display")
+	void SetDeathDisplay(bool bIsDead, float RemainingSeconds);
+
+	UFUNCTION(BlueprintCallable, Category="Battle HUD|Display")
+	void SetProtectionDisplay(bool bProtected, float RemainingSeconds);
 
 protected:
 	virtual void NativeOnInitialized() override;
@@ -75,6 +95,21 @@ protected:
 
 	UFUNCTION(BlueprintImplementableEvent, Category="Battle HUD|Flow")
 	void BP_ReceiveReloadState(bool bIsReloading, float NormalizedProgress);
+
+	UFUNCTION(BlueprintImplementableEvent, Category="Battle HUD|Flow")
+	void BP_ReceiveHitConfirmed();
+
+	UFUNCTION(BlueprintImplementableEvent, Category="Battle HUD|Flow")
+	void BP_ReceiveDamageFeedback();
+
+	UFUNCTION(BlueprintImplementableEvent, Category="Battle HUD|Flow")
+	void BP_ReceiveDeathState(bool bIsDead, float RemainingSeconds);
+
+	UFUNCTION(BlueprintImplementableEvent, Category="Battle HUD|Flow")
+	void BP_ReceiveProtectionState(bool bProtected, float RemainingSeconds);
+
+	UFUNCTION(BlueprintImplementableEvent, Category="Battle HUD|Flow")
+	void BP_ResetCombatFeedback();
 
 	UFUNCTION(BlueprintImplementableEvent, Category="Battle HUD|Flow")
 	void BP_SetDevelopmentPreviewEnabled(bool bEnabled);
@@ -102,6 +137,24 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UProgressBar> ReloadBar;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> DamageOverlay;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> HitText;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> DeathPanel;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> DeathText;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> ProtectionPanel;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> ProtectionText;
 
 	bool bDevelopmentPreviewEnabled = false;
 };

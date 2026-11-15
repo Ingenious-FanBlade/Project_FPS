@@ -35,11 +35,30 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Shooter|Battle HUD")
 	void UpdateBattleHUDReload(bool bIsReloading, float NormalizedProgress);
 
+	/** Show a transient marker only after an external authority confirms a hit. */
+	UFUNCTION(BlueprintCallable, Category="Shooter|Battle HUD")
+	void UpdateBattleHUDHitConfirmed();
+
+	/** Show transient damage feedback after an externally confirmed damage event. */
+	UFUNCTION(BlueprintCallable, Category="Shooter|Battle HUD")
+	void UpdateBattleHUDDamageFeedback();
+
+	/** Display externally computed, nonnegative seconds until respawn. */
+	UFUNCTION(BlueprintCallable, Category="Shooter|Battle HUD")
+	void UpdateBattleHUDDeath(bool bIsDead, float RemainingSeconds);
+
+	/** Display externally computed, nonnegative seconds of respawn protection. */
+	UFUNCTION(BlueprintCallable, Category="Shooter|Battle HUD")
+	void UpdateBattleHUDProtection(bool bProtected, float RemainingSeconds);
+
+	/** Called by the template character after its death timer destroys the old Pawn. */
+	void RespawnTemplateCharacter(TSubclassOf<AShooterCharacter> FallbackClass);
+
 	/** Local console command: HUDPreview 1 enables the isolated preview; HUDPreview 0 restores formal data. */
 	UFUNCTION(Exec)
 	void HUDPreview(bool bEnabled);
 
-	/** Local console command: 0 auto-cycles; 1-4 select a fixed preview state. */
+	/** Local console command: 0 auto-cycles; 1-9 select a fixed preview state. */
 	UFUNCTION(Exec)
 	void HUDPreviewState(int32 StateIndex);
 
@@ -104,5 +123,6 @@ protected:
 
 	bool ShouldUseTouchControls() const;
 	void EnsureBattleHUD();
+	void ResetBattleHUDCombatFeedback();
 	void UnbindFromPawn(APawn* InPawn);
 };

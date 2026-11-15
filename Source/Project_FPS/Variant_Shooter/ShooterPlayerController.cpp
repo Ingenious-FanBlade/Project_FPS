@@ -35,6 +35,7 @@ void AShooterPlayerController::BeginPlay()
 void AShooterPlayerController::EndPlay(EEndPlayReason::Type EndPlayReason)
 {
 	UnbindFromPawn(GetPawn());
+	ResetBattleHUDCombatFeedback();
 
 	if (IsValid(BattleHUD))
 	{
@@ -95,6 +96,7 @@ void AShooterPlayerController::SetupInputComponent()
 void AShooterPlayerController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
+	ResetBattleHUDCombatFeedback();
 
 	InPawn->OnDestroyed.AddUniqueDynamic(this, &AShooterPlayerController::OnPawnDestroyed);
 	if (AShooterCharacter* ShooterCharacter = Cast<AShooterCharacter>(InPawn))
@@ -111,30 +113,60 @@ void AShooterPlayerController::OnPossess(APawn* InPawn)
 void AShooterPlayerController::OnUnPossess()
 {
 	UnbindFromPawn(GetPawn());
+	ResetBattleHUDCombatFeedback();
+	UpdateBattleHUDAmmo(0, 0);
+	UpdateBattleHUDReload(false, 0.0f);
 	Super::OnUnPossess();
 }
 
 void AShooterPlayerController::OnPawnDestroyed(AActor* DestroyedActor)
 {
 	UnbindFromPawn(Cast<APawn>(DestroyedActor));
+	ResetBattleHUDCombatFeedback();
 	UpdateBattleHUDAmmo(0, 0);
 	UpdateBattleHUDReload(false, 0.0f);
+}
 
-	if (TeamByte < TeamTags.Num())
+void AShooterPlayerController::RespawnTemplateCharacter(TSubclassOf<AShooterCharacter> FallbackClass)
+{
+	if (!HasAuthority() || !GetWorld())
 	{
-		TArray<AActor*> ActorList;
+		return;
+	}
+
+	UClass* SpawnClass = CharacterClass ? CharacterClass.Get() : FallbackClass.Get();
+	if (!SpawnClass)
+	{
+		UE_LOG(LogProject_FPS, Warning, TEXT("Template respawn failed: no character class is configured."));
+		return;
+	}
+
+	TArray<AActor*> ActorList;
+	if (TeamTags.IsValidIndex(TeamByte))
+	{
 		UGameplayStatics::GetAllActorsOfClassWithTag(GetWorld(), APlayerStart::StaticClass(), TeamTags[TeamByte], ActorList);
+	}
+	if (ActorList.IsEmpty())
+	{
+		UGameplayStatics::GetAllActorsOfClass(GetWorld(), APlayerStart::StaticClass(), ActorList);
+	}
+	if (ActorList.IsEmpty())
+	{
+		UE_LOG(LogProject_FPS, Warning, TEXT("Template respawn failed: no PlayerStart exists in the current map."));
+		return;
+	}
 
-		if (ActorList.Num() > 0)
-		{
-			AActor* RandomPlayerStart = ActorList[FMath::RandRange(0, ActorList.Num() - 1)];
-			const FTransform SpawnTransform = RandomPlayerStart->GetActorTransform();
-
-			if (AShooterCharacter* RespawnedCharacter = GetWorld()->SpawnActor<AShooterCharacter>(CharacterClass, SpawnTransform))
-			{
-				Possess(RespawnedCharacter);
-			}
-		}
+	const AActor* PlayerStart = ActorList[FMath::RandRange(0, ActorList.Num() - 1)];
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	if (AShooterCharacter* RespawnedCharacter = GetWorld()->SpawnActor<AShooterCharacter>(SpawnClass, PlayerStart->GetActorTransform(), SpawnParameters))
+	{
+		Possess(RespawnedCharacter);
+		UE_LOG(LogProject_FPS, Log, TEXT("Template respawn possessed %s at %s."), *GetNameSafe(RespawnedCharacter), *GetNameSafe(PlayerStart));
+	}
+	else
+	{
+		UE_LOG(LogProject_FPS, Warning, TEXT("Template respawn failed: could not spawn %s."), *GetNameSafe(SpawnClass));
 	}
 }
 
@@ -181,6 +213,42 @@ void AShooterPlayerController::UpdateBattleHUDReload(bool bIsReloading, float No
 	}
 }
 
+void AShooterPlayerController::UpdateBattleHUDHitConfirmed()
+{
+	EnsureBattleHUD();
+	if (IsValid(BattleHUD))
+	{
+		BattleHUD->ReceiveHitConfirmed();
+	}
+}
+
+void AShooterPlayerController::UpdateBattleHUDDamageFeedback()
+{
+	EnsureBattleHUD();
+	if (IsValid(BattleHUD))
+	{
+		BattleHUD->ReceiveDamageFeedback();
+	}
+}
+
+void AShooterPlayerController::UpdateBattleHUDDeath(bool bIsDead, float RemainingSeconds)
+{
+	EnsureBattleHUD();
+	if (IsValid(BattleHUD))
+	{
+		BattleHUD->ReceiveDeathState(bIsDead, RemainingSeconds);
+	}
+}
+
+void AShooterPlayerController::UpdateBattleHUDProtection(bool bProtected, float RemainingSeconds)
+{
+	EnsureBattleHUD();
+	if (IsValid(BattleHUD))
+	{
+		BattleHUD->ReceiveProtectionState(bProtected, RemainingSeconds);
+	}
+}
+
 void AShooterPlayerController::HUDPreview(bool bEnabled)
 {
 	if (!IsLocalPlayerController())
@@ -219,6 +287,14 @@ void AShooterPlayerController::EnsureBattleHUD()
 	else
 	{
 		UE_LOG(LogProject_FPS, Error, TEXT("Could not spawn the native battle HUD widget."));
+	}
+}
+
+void AShooterPlayerController::ResetBattleHUDCombatFeedback()
+{
+	if (IsValid(BattleHUD))
+	{
+		BattleHUD->ResetCombatFeedback();
 	}
 }
 

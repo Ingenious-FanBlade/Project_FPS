@@ -13,6 +13,7 @@
 #include "Camera/CameraComponent.h"
 #include "TimerManager.h"
 #include "ShooterGameMode.h"
+#include "ShooterPlayerController.h"
 
 AShooterCharacter::AShooterCharacter()
 {
@@ -322,8 +323,20 @@ void AShooterCharacter::Die()
 
 void AShooterCharacter::OnRespawn()
 {
-	// destroy the character to force the PC to respawn
-	Destroy();
+	// APawn unpossesses its controller before broadcasting OnDestroyed, so the
+	// controller must be captured before destruction and explicitly restarted.
+	AShooterPlayerController* ShooterController = Cast<AShooterPlayerController>(GetController());
+	TSubclassOf<AShooterCharacter> RespawnClass = GetClass();
+	const bool bDestroyed = Destroy();
+	if (bDestroyed && IsValid(ShooterController))
+	{
+		ShooterController->RespawnTemplateCharacter(RespawnClass);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Template respawn could not restart %s (destroyed=%d, controller=%s)."),
+			*GetName(), bDestroyed, *GetNameSafe(ShooterController));
+	}
 }
 
 bool AShooterCharacter::IsDead() const

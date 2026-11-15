@@ -79,6 +79,31 @@ void UBattleHUDWidget::ReceiveReloadState(bool bIsReloading, float NormalizedPro
 	BP_ReceiveReloadState(bIsReloading, NormalizedProgress);
 }
 
+void UBattleHUDWidget::ReceiveHitConfirmed()
+{
+	BP_ReceiveHitConfirmed();
+}
+
+void UBattleHUDWidget::ReceiveDamageFeedback()
+{
+	BP_ReceiveDamageFeedback();
+}
+
+void UBattleHUDWidget::ReceiveDeathState(bool bIsDead, float RemainingSeconds)
+{
+	BP_ReceiveDeathState(bIsDead, RemainingSeconds);
+}
+
+void UBattleHUDWidget::ReceiveProtectionState(bool bProtected, float RemainingSeconds)
+{
+	BP_ReceiveProtectionState(bProtected, RemainingSeconds);
+}
+
+void UBattleHUDWidget::ResetCombatFeedback()
+{
+	BP_ResetCombatFeedback();
+}
+
 void UBattleHUDWidget::SetDevelopmentPreviewEnabled(bool bEnabled)
 {
 	bDevelopmentPreviewEnabled = bEnabled;
@@ -87,7 +112,7 @@ void UBattleHUDWidget::SetDevelopmentPreviewEnabled(bool bEnabled)
 
 void UBattleHUDWidget::SetDevelopmentPreviewState(int32 StateIndex)
 {
-	BP_SetDevelopmentPreviewState(FMath::Clamp(StateIndex, 0, 4));
+	BP_SetDevelopmentPreviewState(FMath::Clamp(StateIndex, 0, 9));
 }
 
 void UBattleHUDWidget::SetHealthDisplay(float CurrentHealth, float MaxHealth)
@@ -142,6 +167,46 @@ void UBattleHUDWidget::SetReloadDisplay(bool bIsReloading, float NormalizedProgr
 	ReloadText->SetText(FText::Format(
 		LOCTEXT("ReloadFormat", "换弹中  {0}%"),
 		FText::AsNumber(FMath::RoundToInt(SafeProgress * 100.0f))));
+}
+
+void UBattleHUDWidget::SetHitDisplay(bool bVisible)
+{
+	if (HitText)
+	{
+		HitText->SetVisibility(bVisible ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}
+
+void UBattleHUDWidget::SetDamageDisplay(float Opacity)
+{
+	if (DamageOverlay)
+	{
+		const float SafeOpacity = FMath::Clamp(Opacity, 0.0f, 0.35f);
+		DamageOverlay->SetBrushColor(FLinearColor(0.8f, 0.025f, 0.025f, SafeOpacity));
+		DamageOverlay->SetVisibility(SafeOpacity > 0.0f ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+}
+
+void UBattleHUDWidget::SetDeathDisplay(bool bIsDead, float RemainingSeconds)
+{
+	if (DeathPanel && DeathText)
+	{
+		DeathPanel->SetVisibility(bIsDead ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		DeathText->SetText(FText::Format(
+			LOCTEXT("RespawnCountdown", "等待重生  {0} 秒"),
+			FText::AsNumber(FMath::CeilToInt(FMath::Max(0.0f, RemainingSeconds)))));
+	}
+}
+
+void UBattleHUDWidget::SetProtectionDisplay(bool bProtected, float RemainingSeconds)
+{
+	if (ProtectionPanel && ProtectionText)
+	{
+		ProtectionPanel->SetVisibility(bProtected ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		ProtectionText->SetText(FText::Format(
+			LOCTEXT("ProtectionCountdown", "重生保护  {0} 秒"),
+			FText::AsNumber(FMath::Max(0.0f, RemainingSeconds))));
+	}
 }
 
 void UBattleHUDWidget::BuildNativeLayout()
@@ -212,6 +277,44 @@ void UBattleHUDWidget::BuildNativeLayout()
 	ReloadBar->SetFillColorAndOpacity(FLinearColor(0.95f, 0.72f, 0.18f, 1.0f));
 	AmmoColumn->AddChildToVerticalBox(ReloadBar);
 	SetReloadDisplay(false, 0.0f);
+
+	// Full-screen tint and short-lived hit marker. These never intercept input.
+	DamageOverlay = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("DamageOverlay"));
+	UCanvasPanelSlot* DamageSlot = RootCanvas->AddChildToCanvas(DamageOverlay);
+	DamageSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
+	DamageSlot->SetOffsets(FMargin(0.0f));
+	SetDamageDisplay(0.0f);
+
+	HitText = MakeText(WidgetTree, TEXT("HitText"), LOCTEXT("HitConfirmed", "命中"), 20);
+	HitText->SetJustification(ETextJustify::Center);
+	UCanvasPanelSlot* HitSlot = RootCanvas->AddChildToCanvas(HitText);
+	HitSlot->SetAnchors(FAnchors(0.5f, 0.5f));
+	HitSlot->SetAlignment(FVector2D(0.5f, 0.0f));
+	HitSlot->SetPosition(FVector2D(0.0f, 25.0f));
+	HitSlot->SetSize(FVector2D(100.0f, 30.0f));
+	SetHitDisplay(false);
+
+	DeathPanel = MakePanel(WidgetTree, TEXT("DeathPanel"));
+	UCanvasPanelSlot* DeathSlot = RootCanvas->AddChildToCanvas(DeathPanel);
+	DeathSlot->SetAnchors(FAnchors(0.5f, 0.5f));
+	DeathSlot->SetAlignment(FVector2D(0.5f, 0.0f));
+	DeathSlot->SetPosition(FVector2D(0.0f, 85.0f));
+	DeathSlot->SetSize(FVector2D(280.0f, 65.0f));
+	DeathText = MakeText(WidgetTree, TEXT("DeathText"), FText::GetEmpty(), 22);
+	DeathText->SetJustification(ETextJustify::Center);
+	DeathPanel->SetContent(DeathText);
+	SetDeathDisplay(false, 0.0f);
+
+	ProtectionPanel = MakePanel(WidgetTree, TEXT("ProtectionPanel"));
+	UCanvasPanelSlot* ProtectionSlot = RootCanvas->AddChildToCanvas(ProtectionPanel);
+	ProtectionSlot->SetAnchors(FAnchors(0.5f, 0.0f));
+	ProtectionSlot->SetAlignment(FVector2D(0.5f, 0.0f));
+	ProtectionSlot->SetPosition(FVector2D(0.0f, 104.0f));
+	ProtectionSlot->SetSize(FVector2D(260.0f, 55.0f));
+	ProtectionText = MakeText(WidgetTree, TEXT("ProtectionText"), FText::GetEmpty(), 18);
+	ProtectionText->SetJustification(ETextJustify::Center);
+	ProtectionPanel->SetContent(ProtectionText);
+	SetProtectionDisplay(false, 0.0f);
 }
 
 #undef LOCTEXT_NAMESPACE
