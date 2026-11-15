@@ -32,6 +32,49 @@ void UBattleWeaponComponent::InitializeAmmo(int32 InMagazineAmmo, int32 InReserv
 	// 新生命期不继承上一生命期的换弹进度。
 	bIsReloading = false;
 	ReloadStartServerTime = 0.0;
+
+	// 新生命期重新开始射速与 ShotId 记录。
+	ResetFireState();
+}
+
+bool UBattleWeaponComponent::ConsumeAmmo(int32 Amount)
+{
+	// 只有服务器可以扣除权威弹药。
+	if (GetOwnerRole() != ROLE_Authority)
+	{
+		return false;
+	}
+
+	// 非法数量或弹药不足时不做任何修改。
+	if (Amount <= 0 || MagazineAmmo < Amount)
+	{
+		return false;
+	}
+
+	MagazineAmmo -= Amount;
+	return true;
+}
+
+void UBattleWeaponComponent::RecordAcceptedShot(int32 ShotId, double ServerTime)
+{
+	if (GetOwnerRole() != ROLE_Authority)
+	{
+		return;
+	}
+
+	LastFireServerTime = ServerTime;
+	LastAcceptedShotId = ShotId;
+}
+
+void UBattleWeaponComponent::ResetFireState()
+{
+	if (GetOwnerRole() != ROLE_Authority)
+	{
+		return;
+	}
+
+	LastFireServerTime = -1.0;
+	LastAcceptedShotId = -1;
 }
 
 void UBattleWeaponComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

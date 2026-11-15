@@ -2,6 +2,7 @@
 
 #include "Battle/BattlePlayerController.h"
 
+#include "Battle/BattleCharacter.h"
 #include "BattleHUDWidget.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/LocalPlayer.h"
@@ -133,6 +134,32 @@ void ABattlePlayerController::HUDPreviewState(int32 StateIndex)
 	if (IsLocalPlayerController() && IsValid(BattleHUD))
 	{
 		BattleHUD->SetDevelopmentPreviewState(StateIndex);
+	}
+}
+
+void ABattlePlayerController::BattleTestFire(int32 Count)
+{
+	UE_LOG(LogTemp, Warning, TEXT("TestFire: PC Called. Count=%d LocalController=%s"),
+		Count, IsLocalController() ? TEXT("yes") : TEXT("no"));
+
+	// 只有本地客户端窗口的命令才有意义；服务器窗口不发送开火请求。
+	if (!IsLocalController())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestFire: not a local controller, aborting."));
+		return;
+	}
+
+	ABattleCharacter* BattleCharacter = GetPawn<ABattleCharacter>();
+	if (!BattleCharacter)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestFire: no ABattleCharacter possessed, aborting."));
+		return;
+	}
+
+	const int32 SafeCount = FMath::Clamp(Count, 1, 32);
+	for (int32 Index = 0; Index < SafeCount; ++Index)
+	{
+		BattleCharacter->DebugTriggerFire();
 	}
 }
 
