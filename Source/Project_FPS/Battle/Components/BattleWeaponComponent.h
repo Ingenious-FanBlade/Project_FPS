@@ -8,6 +8,9 @@
 
 class AShooterWeapon;
 
+/** 拥有者客户端收到权威弹药或换弹状态后触发。 */
+DECLARE_MULTICAST_DELEGATE(FOnBattleWeaponStateChanged);
+
 /**
  * 战斗角色武器组件（F05-01）。
  *
@@ -52,6 +55,12 @@ public:
 	/** 返回权威备用弹药。两端可读。 */
 	UFUNCTION(BlueprintPure, Category = "Battle Weapon")
 	int32 GetReserveAmmo() const { return ReserveAmmo; }
+
+	/**
+	 * 权威武器状态变化通知。服务器提交状态及拥有者客户端 RepNotify 都会触发。
+	 * 仅传递“状态已变化”，订阅方应通过只读访问器获取同一帧完整快照。
+	 */
+	FOnBattleWeaponStateChanged OnWeaponStateChanged;
 
 	//~End F05-01
 
@@ -129,19 +138,19 @@ protected:
 	TObjectPtr<AShooterWeapon> CurrentWeapon;
 
 	/** 权威弹匣弹药。拥有者可见。 */
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing = OnRep_WeaponState)
 	int32 MagazineAmmo = 0;
 
 	/** 权威备用弹药。拥有者可见。 */
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing = OnRep_WeaponState)
 	int32 ReserveAmmo = 0;
 
 	/** 换弹状态。由 F05-05 的 BeginReload／CompleteReload／CancelReload 写入。 */
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing = OnRep_WeaponState)
 	bool bIsReloading = false;
 
 	/** 换弹开始时的服务器时间（秒）。换弹结束时清零。 */
-	UPROPERTY(Replicated)
+	UPROPERTY(ReplicatedUsing = OnRep_WeaponState)
 	double ReloadStartServerTime = 0.0;
 
 	/** 最近一次被接受的开火时间（世界时间秒）。不复制，仅服务器使用。 */
@@ -152,6 +161,13 @@ protected:
 
 	/** 已接受的最大换弹请求编号。-1 表示本生命期尚未换弹。不复制，仅服务器使用。 */
 	int32 LastAcceptedReloadId = -1;
+
+	/** 任一拥有者可见武器状态复制完成后的统一通知入口。 */
+	UFUNCTION()
+	void OnRep_WeaponState();
+
+	/** 广播状态变化；不修改任何权威数据。 */
+	void NotifyWeaponStateChanged();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 };

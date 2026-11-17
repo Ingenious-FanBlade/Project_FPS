@@ -153,7 +153,15 @@ void ABattleCharacter::AddWeaponRecoil(float Recoil)
 
 void ABattleCharacter::UpdateWeaponHUD(int32 CurrentAmmo, int32 MagazineSize)
 {
-	// TODO(S3-F05-04): 将权威弹药推送到 ABattlePlayerController 的 HUD 接口。
+	// 正式 HUD 从 UBattleWeaponComponent 的拥有者复制状态刷新；模板武器回调
+	// 不含备用弹药，不能作为正式战斗弹药真值。
+	(void)CurrentAmmo;
+	(void)MagazineSize;
+}
+
+float ABattleCharacter::GetWeaponReloadDuration() const
+{
+	return WeaponDefinition ? FMath::Max(0.1f, WeaponDefinition->ReloadDuration) : 0.0f;
 }
 
 FVector ABattleCharacter::GetWeaponTargetLocation()

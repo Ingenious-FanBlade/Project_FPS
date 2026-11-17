@@ -189,6 +189,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Battle|Weapon")
 	UBattleWeaponComponent* GetWeaponComponent() const { return WeaponComponent; }
 
+	/** 返回当前武器配置的换弹耗时；未配置武器时返回 0。 */
+	UFUNCTION(BlueprintPure, Category = "Battle|Weapon")
+	float GetWeaponReloadDuration() const;
+
 public:
 
 	/**
