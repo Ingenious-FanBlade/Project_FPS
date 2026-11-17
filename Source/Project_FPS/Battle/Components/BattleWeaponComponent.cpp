@@ -36,6 +36,7 @@ void UBattleWeaponComponent::InitializeAmmo(int32 InMagazineAmmo, int32 InReserv
 	// 新生命期重新开始射速、ShotId 与换弹请求编号记录。
 	ResetFireState();
 	LastAcceptedReloadId = -1;
+	NotifyWeaponStateChanged();
 }
 
 bool UBattleWeaponComponent::ConsumeAmmo(int32 Amount)
@@ -60,6 +61,7 @@ bool UBattleWeaponComponent::ConsumeAmmo(int32 Amount)
 	}
 
 	MagazineAmmo -= Amount;
+	NotifyWeaponStateChanged();
 	return true;
 }
 
@@ -72,6 +74,7 @@ bool UBattleWeaponComponent::BeginReload(double ServerTime)
 
 	bIsReloading = true;
 	ReloadStartServerTime = ServerTime;
+	NotifyWeaponStateChanged();
 	return true;
 }
 
@@ -87,6 +90,7 @@ int32 UBattleWeaponComponent::CompleteReload(int32 LoadAmount)
 	{
 		bIsReloading = false;
 		ReloadStartServerTime = 0.0;
+		NotifyWeaponStateChanged();
 		return 0;
 	}
 
@@ -95,6 +99,7 @@ int32 UBattleWeaponComponent::CompleteReload(int32 LoadAmount)
 
 	bIsReloading = false;
 	ReloadStartServerTime = 0.0;
+	NotifyWeaponStateChanged();
 
 	return LoadAmount;
 }
@@ -109,6 +114,17 @@ void UBattleWeaponComponent::CancelReload()
 	// 中断不转移任何弹药，保持原子性。
 	bIsReloading = false;
 	ReloadStartServerTime = 0.0;
+	NotifyWeaponStateChanged();
+}
+
+void UBattleWeaponComponent::OnRep_WeaponState()
+{
+	NotifyWeaponStateChanged();
+}
+
+void UBattleWeaponComponent::NotifyWeaponStateChanged()
+{
+	OnWeaponStateChanged.Broadcast();
 }
 
 void UBattleWeaponComponent::RecordAcceptedReload(int32 ReloadRequestId)

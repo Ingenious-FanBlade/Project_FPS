@@ -7,6 +7,7 @@
 #include "BattlePlayerController.generated.h"
 
 class UBattleHUDWidget;
+class UBattleWeaponComponent;
 class UShooterBulletCounterUI;
 
 /**
@@ -43,11 +44,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Battle HUD")
 	void UpdateBattleHUDReload(bool bIsReloading, float NormalizedProgress);
 
+	/** 仅在外部权威流程确认有效命中后显示短暂命中标记。 */
+	UFUNCTION(BlueprintCallable, Category = "Battle HUD")
+	void UpdateBattleHUDHitConfirmed();
+
+	/** 仅在外部权威流程确认受伤后显示短暂受伤反馈。 */
+	UFUNCTION(BlueprintCallable, Category = "Battle HUD")
+	void UpdateBattleHUDDamageFeedback();
+
+	/** 显示外部根据服务器截止时间计算的非负重生剩余秒数。 */
+	UFUNCTION(BlueprintCallable, Category = "Battle HUD")
+	void UpdateBattleHUDDeath(bool bIsDead, float RemainingSeconds);
+
+	/** 显示外部根据服务器截止时间计算的非负保护剩余秒数。 */
+	UFUNCTION(BlueprintCallable, Category = "Battle HUD")
+	void UpdateBattleHUDProtection(bool bProtected, float RemainingSeconds);
+
 	/** 本地控制台命令：HUDPreview 1 启用隔离预览，HUDPreview 0 恢复正式数据。 */
 	UFUNCTION(Exec)
 	void HUDPreview(bool bEnabled);
 
-	/** 本地控制台命令：0 自动循环，1-4 选择固定预览状态。 */
+	/** 本地控制台命令：0 自动循环，1-9 选择固定预览状态。 */
 	UFUNCTION(Exec)
 	void HUDPreviewState(int32 StateIndex);
 
@@ -69,6 +86,9 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(EEndPlayReason::Type EndPlayReason) override;
 	virtual void SetupInputComponent() override;
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnUnPossess() override;
+	virtual void OnRep_Pawn() override;
 
 	/**
 	 * 输入映射上下文与触控控件由父类 AProject_FPSPlayerController 提供
@@ -94,4 +114,27 @@ protected:
 
 	/** 确保本地玩家创建且仅创建一个 Battle HUD。 */
 	void EnsureBattleHUD();
+
+	/** 将正式 Battle Pawn 的拥有者可见武器状态接入 HUD。 */
+	void RefreshPawnBinding();
+
+	/** 解除旧 Pawn 与武器组件绑定并停止换弹进度刷新。 */
+	void UnbindFromBattlePawn();
+
+	/** 从武器组件读取同一帧完整快照并刷新弹药与换弹显示。 */
+	void HandleWeaponStateChanged();
+
+	/** 根据同步服务器时间刷新换弹进度。 */
+	void RefreshReloadHUD();
+
+	/** 清理 F09-03 的本地短暂表现、死亡和保护状态。 */
+	void ResetBattleHUDCombatFeedback();
+
+	/** 旧 Pawn 销毁时立即清理绑定，避免等待复制状态更新。 */
+	UFUNCTION()
+	void HandleBoundPawnDestroyed(AActor* DestroyedActor);
+
+	TWeakObjectPtr<APawn> BoundBattlePawn;
+	TWeakObjectPtr<UBattleWeaponComponent> BoundWeaponComponent;
+	FTimerHandle ReloadHUDTimer;
 };

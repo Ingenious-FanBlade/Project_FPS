@@ -77,8 +77,8 @@
 | --- | --- | --- | --- | --- |
 | `MagazineAmmo` | `int32` | `COND_OwnerOnly` | 服务器 | F05-01 写入初始值 |
 | `ReserveAmmo` | `int32` | `COND_OwnerOnly` | 服务器 | F05-01 写入初始值 |
-| `bIsReloading` | `bool` | `COND_OwnerOnly` | [F05-05 预留] | 字段已复制，恒为 false |
-| `ReloadStartServerTime` | `double` | `COND_OwnerOnly` | [F05-05 预留] | 字段已复制，恒为 0 |
+| `bIsReloading` | `bool` | `COND_OwnerOnly` | 服务器 | F05-05 在开始／完成／中断时写入 |
+| `ReloadStartServerTime` | `double` | `COND_OwnerOnly` | 服务器 | 开始时写服务器时间，完成／中断时清零 |
 
 `CurrentWeapon` 为 `Transient` 非复制字段。
 
@@ -91,8 +91,11 @@
 | `InitializeAmmo(int32, int32)` | **仅服务器** | 写入弹匣与备用弹药；同时复位换弹状态；非权威调用直接返回 |
 | `GetMagazineAmmo() : int32` | 两端 | 纯读权威弹匣弹药 |
 | `GetReserveAmmo() : int32` | 两端 | 纯读权威备用弹药 |
-| `IsReloading() : bool` | 两端 | 纯读换弹占位状态 |
-| `GetReloadStartServerTime() : double` | 两端 | 纯读换弹开始时间占位 |
+| `IsReloading() : bool` | 两端 | 纯读权威换弹状态 |
+| `GetReloadStartServerTime() : double` | 两端 | 纯读权威换弹开始服务器时间 |
+| `OnWeaponStateChanged` | 服务器提交端、拥有者客户端 | 任一上述复制状态变化时广播；订阅者随后通过只读接口取得完整快照 |
+
+四个拥有者可见字段使用同一个 `OnRep_WeaponState`。一次网络更新可能触发多次通知，因此订阅方必须按“状态已变化”处理，不得按通知次数累计弹药或进度。
 
 ## 5. 初始化装配时序
 
@@ -105,22 +108,21 @@
 | 5 | `AShooterWeapon::BeginPlay`（引擎内） | 生成端 | — | 模板解析 `WeaponOwner` 并回调 `AttachWeaponMeshes(this)` |
 | 6 | `AttachWeaponMeshes` | 生成端 | 武器有效 | 武器 Actor 挂到组件，第一／第三人称网格挂到角色网格插槽 |
 | 7 | `OnWeaponActivated` | 生成端 | 武器与组件有效 | 服务器按 `MagazineSize`／`InitialReserveAmmo` 调用 `InitializeAmmo` 并复位换弹状态 |
-| 8 | 属性复制 | 引擎 | 角色复制到客户端 | 客户端获得角色、组件与拥有者可见的弹药 |
+| 8 | 属性复制 | 引擎 | 角色复制到客户端 | 拥有者客户端获得弹药与换弹状态，RepNotify 广播 `OnWeaponStateChanged` |
+| 9 | HUD 绑定 | 拥有者客户端 | `ABattlePlayerController` 已取得 Battle Pawn | 绑定组件通知并立即读取一次完整快照；Pawn 切换或销毁时解绑 |
 
 **关键时序说明**：`SpawnActor` 会同步执行武器 `BeginPlay`，因此在 `AddWeaponClass` 内部，`AttachWeaponMeshes` 已先于 `SetCurrentWeapon` 执行；武器引用统一由 `AddWeaponClass` 与 `OnWeaponActivated` 提交，`AttachWeaponMeshes` 不做记录。
 
 **重生配合**：`BeginPlay` 触发意味着 F06-04 销毁并重建角色后会自动重新装备并重置弹药，无需额外调用。
 
-## 6. 为 F05-03／F05-04／F05-05 预留的接口
+## 6. F05 子任务接入状态
 
-本阶段**不实现**任何开火、射线、伤害或换弹逻辑，仅预留数据与访问点：
-
-| 任务 | 已预留的接入点 | 当前状态 |
+| 任务 | 主要接入点 | 当前状态 |
 | --- | --- | --- |
 | F05-02 | `UBattleWeaponDefinition::FiringMontage`；`ABattleCharacter::PlayFiringMontage`／`AddWeaponRecoil` 空实现；`FireAction` 属性 | 未实现 |
-| F05-03 | `UBattleWeaponComponent::GetMagazineAmmo()` 作为弹药校验入口；`ABattleCharacter::OnSemiWeaponRefire` 空实现；`SetupPlayerInputComponent` 中的绑定 TODO | 未实现；**未声明任何 RPC** |
-| F05-04 | `UBattleWeaponComponent::MagazineAmmo` 作为唯一权威弹药；`ABattleCharacter::UpdateWeaponHUD`／`GetWeaponTargetLocation` 空实现；组件的世界变换可作为枪口与射线起点 | 未实现 |
-| F05-05 | `UBattleWeaponComponent::bIsReloading`／`ReloadStartServerTime` 已复制；`UBattleWeaponDefinition::ReloadDuration` | 字段已就位，逻辑未实现；**无换弹 RPC** |
+| F05-03 | `Server_Fire`、权威弹药校验与扣减、ShotId 去重 | 已实现；LifeId 校验待 F06 |
+| F05-04 | 服务器射线、`FBattleShotResult`、拥有者弹药 HUD 刷新 | 射线和 HUD 已实现；伤害提交待 F06 |
+| F05-05 | `Server_Reload`、权威计时与弹药转移、拥有者换弹 HUD | 已实现；死亡／比赛结束中断触发分别待 F06／F08 |
 
 约束：
 
@@ -308,7 +310,7 @@ F06 接入要求：
 ### 9.1 实现状态
 
 - 已实现：`Server_Reload` 可靠 RPC、10 步校验链、服务端计时、弹药转移、中断接口 `InterruptReload`、`Multicast_ReloadEffect` 日志占位。
-- **未实现**：换弹动画与音效（F05-02）、HUD 进度显示（F09）、死亡中断的实际触发（F06）、比赛结束中断（M2 阶段流转）。
+- **未实现**：换弹动画与音效（F05-02）、死亡中断的实际触发（F06）、比赛结束中断（M2 阶段流转）。拥有者 HUD 进度已由 F09 接入。
 
 ### 9.2 RPC 契约
 
@@ -419,7 +421,8 @@ M1／S3 阶段规则由 C++ 实现。Lua 规则接入点（开火、换弹、伤
 | 命中反馈 Multicast | 未实现；属 F09-03，依赖 F06 权威伤害结果 |
 | `VictimLifeId` 填充 | 未实现；待 F06 提供 LifeId |
 | 换弹开始／结束、弹药转移、中断（F05-05） | **已实现**（见第 9 节）；主动取消刻意不实现 |
-| 换弹动画、音效与 HUD 进度 | 未实现；属 F05-02／F09 |
+| 换弹动画与音效 | 未实现；属 F05-02 |
+| 拥有者 HUD 弹药与换弹进度 | **已实现代码接入**；复制与双端渲染待运行验证 |
 | 死亡触发的换弹中断 | 未实现；`InterruptReload` 已提供，待 F06 调用 |
 | 比赛结束触发的换弹中断 | 未实现；待 M2 阶段流转通知 |
 | 存活校验（F06） | 占位为存活，恒不拒绝 |
@@ -443,3 +446,4 @@ M1／S3 阶段规则由 C++ 实现。Lua 规则接入点（开火、换弹、伤
 | 2026-11-15 | 新增 F05-05 换弹与中断：`Server_Reload` 可靠 RPC、10 项校验链、TimerManager 计时、换满为止的弹药转移、`InterruptReload`、`Multicast_ReloadEffect`、`BattleTestReload` 调试命令；`ConsumeAmmo` 增加换弹期防御 | 新增 `Server_Reload`／`Multicast_ReloadEffect`／`Server_Reload_Validate`／`InterruptReload`；组件新增 `BeginReload`／`CompleteReload`／`CancelReload`／`RecordAcceptedReload`／`GetLastAcceptedReloadId`；拒绝原因码追加三项；开火链未改动 | C++ 编译与仓库文本检查待执行；换弹与中断待 `BattleTestReload` 验证 |
 | 2026-11-15 | 补充 `ClientRoundId` 来源约束：必须取自复制的 `ABattleGameState`，不得从 GameMode 读取 | 契约说明补充，无代码变更 | F05-03 双端验证通过（RoundId=1 双方一致、扣弹正常、Multicast 双端接收） |
 | 2026-11-15 | `BattleTestFire` 从 `ABattleCharacter` 移到 `ABattlePlayerController`（Exec 需挂在 PC 上才能被控制台接收）；新增 `ABattleCharacter::DebugTriggerFire()`；拒绝日志由 `Verbose` 提升为 `Warning` | 新增 `ABattlePlayerController::BattleTestFire`、`ABattleCharacter::DebugTriggerFire`；移除 `ABattleCharacter::BattleTestFire` | 待编译与 PIE 验证 |
+| 2026-11-17 | 将拥有者可见弹药与换弹复制状态接入正式 Battle HUD | 四个状态字段改为统一 RepNotify；新增 `OnWeaponStateChanged`、`ABattleCharacter::GetWeaponReloadDuration()`；不改变服务器写入权威和现有 RPC | UE 5.8 `Project_FPSEditor Win64 Development` 编译通过；双端 PIE 待验证 |

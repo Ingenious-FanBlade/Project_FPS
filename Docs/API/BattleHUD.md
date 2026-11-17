@@ -4,21 +4,23 @@
 
 本模块实现 F09-01 当前阶段范围内的准星、生命值与血条、弹匣／备用弹药、换弹状态与进度显示，并提供 F09-03 的命中、受伤、死亡倒计时及重生保护显示层。C++ 创建原生 UMG 布局并提供只显示数据的更新接口，Lua 负责正式数据与开发预览之间的显示流程。
 
-- 调用方：本地 `AShooterPlayerController`；S1 起 `ABattlePlayerController` 迁移了同一组 HUD 接口（见第 8 节），后续由生命、武器和复制状态接收模块调用公开更新函数。
+- 调用方：模板路径使用本地 `AShooterPlayerController`；正式 Battle 路径使用 `ABattlePlayerController`（见第 8 节），由武器复制状态和后续生命状态接收模块调用公开更新函数。
 - 执行端：拥有本地玩家的客户端；Dedicated Server 不创建控件。
 - 权威归属：本模块没有玩法权威，不扣血、不消耗弹药、不决定换弹开始或完成，也不发送 RPC。
-- 当前实现：F09-03 原生控件、Lua 显示流程和本地预览已加入；命中确认、权威死亡截止时间和重生保护数据仍待 F05/F06 接入，因此 F09-03 联机验收未完成。此前 UE 5.8.4 PIE 已观察到 F09-01 准星、生命和当前弹匣显示；新增画面仍待本次验证。
+- 当前实现：F09-03 原生控件、Lua 显示流程和本地预览已加入；正式 Battle 路径已接入 F05 拥有者可见的弹匣、备用弹药、换弹状态和服务器开始时间。命中确认、权威生命、死亡截止时间和重生保护数据仍待 F06，因此 F09-03 联机验收未完成。
 - 设计依据：[客户端设计](../Design/02-client.md)、[玩法设计](../Design/01-gameplay.md)。
 
 相关源码：
 
 - `Source/Project_FPS/Variant_Shooter/UI/BattleHUDWidget.h/.cpp`
 - `Source/Project_FPS/Variant_Shooter/ShooterPlayerController.h/.cpp`
+- `Source/Project_FPS/Battle/BattlePlayerController.h/.cpp`
+- `Source/Project_FPS/Battle/Components/BattleWeaponComponent.h/.cpp`
 - `Content/Script/Client/UI/BattleHUD.lua`
 
 ## 2. 正式显示接口
 
-以下函数均为 `AShooterPlayerController` 的本地 `BlueprintCallable` 接口。输入会转交给 Lua，再由 Lua 调用原生控件的渲染函数。接口无返回值，不改变角色、武器或比赛状态。
+以下函数均由 `AShooterPlayerController` 和 `ABattlePlayerController` 提供为本地 `BlueprintCallable` 接口。输入会转交给 Lua，再由 Lua 调用原生控件的渲染函数。接口无返回值，不改变角色、武器或比赛状态。
 
 ### `UpdateBattleHUDHealth(CurrentHealth, MaxHealth)`
 
@@ -38,7 +40,7 @@
 | `MagazineAmmo` | `int32` | 当前弹匣内子弹数；显示层最小为 0 |
 | `ReserveAmmo` | `int32` | 当前备用弹药数；显示层最小为 0 |
 
-当前 Shooter 模板的 `OnBulletCountUpdated` 只提供弹匣容量和当前弹数，没有备用弹药。模板事件只临时更新当前弹数并把备用弹药显示为 0；这不是权威备用弹药实现。武器复制状态完成后必须同时传入拥有者可见的当前弹匣与备用弹药。
+Shooter 模板的 `OnBulletCountUpdated` 只提供弹匣容量和当前弹数，没有备用弹药，因此模板适配仍把备用弹药显示为 0。正式 Battle 路径订阅 `UBattleWeaponComponent::OnWeaponStateChanged`，同时读取拥有者可见的 `MagazineAmmo` 与 `ReserveAmmo`，绑定后也会主动读取一次完整快照，避免错过早于 Controller 绑定发生的 RepNotify。
 
 ### `UpdateBattleHUDReload(bIsReloading, NormalizedProgress)`
 
@@ -47,7 +49,7 @@
 | `bIsReloading` | `bool` | 是否显示换弹提示；`false` 时隐藏提示与进度条 |
 | `NormalizedProgress` | `float` | `0..1` 的换弹进度，越界值由显示层限制 |
 
-正式流程应根据服务器确认的换弹起止时间在本地计算归一化进度，并在死亡、切图、换弹取消或完成时传入 `false, 0`。当前仓库没有可复用的换弹状态或服务器时间接口，因此尚未接入权威数据。
+正式 Battle 路径读取复制的 `bIsReloading` 与 `ReloadStartServerTime`，使用 `AGameStateBase::GetServerWorldTimeSeconds()` 和武器配置的 `ReloadDuration` 计算归一化进度。仅换弹期间以 0.05 秒本地计时器刷新显示；完成、中断、Pawn 切换或 Controller 结束时清除计时器并传入 `false, 0`。该计时器只计算表现进度，不决定换弹完成或弹药转移。
 
 最小调用示例：
 
@@ -130,6 +132,8 @@ PIE 或本地游戏运行时可在控制台使用。每次重新启动 PIE 后�
 
 - `EnsureBattleHUD` 仅允许本地 PlayerController 且非 Dedicated Server 创建一个 HUD，重复调用不会重复创建。
 - `OnPossess` 使用唯一动态绑定订阅模板角色事件；`OnUnPossess`、Pawn 销毁与 Controller `EndPlay` 都移除绑定。
+- 正式 `ABattlePlayerController` 在 `BeginPlay`、`OnPossess` 和拥有者客户端 `OnRep_Pawn` 统一刷新 Pawn 绑定；绑定武器组件后立即读取权威快照，组件 RepNotify 再驱动后续刷新。
+- 正式 Battle Pawn 解除占有、销毁或 Controller `EndPlay` 时移除武器状态委托并清除换弹 HUD 计时器；重复刷新同一 Pawn 不重复绑定。
 - Shooter 模板的死亡计时器到期后，角色先保存 Controller 和角色类，再销毁旧 Pawn 并显式调用 Controller 的 `RespawnTemplateCharacter`。UE 5.8 在 Pawn 的 `OnDestroyed` 广播前已解除占有，因此不能依赖该广播触发重生。Controller 优先使用本队标记的 PlayerStart，若没有则使用地图中的任意 PlayerStart；角色类未配置时回退到旧 Pawn 的类。此兼容路径仍是模板本地重生，不是 F06 的权威重生调度。
 - `EndPlay` 从视口移除 HUD 和触控控件；Widget 销毁时停止 Lua 显示流程。
 - 角色销毁时清空弹药显示并隐藏换弹提示；新 Pawn 重新绑定模板事件。
@@ -155,14 +159,16 @@ PIE 或本地游戏运行时可在控制台使用。每次重新启动 PIE 后�
 
 ## 8. `ABattlePlayerController` 上的迁移接口
 
-S1（F08-01）为正式对战新建 `ABattlePlayerController`（继承 `AProject_FPSPlayerController`），迁移了 `EnsureBattleHUD`、`UpdateBattleHUDHealth/Ammo/Reload`、`HUDPreview`、`HUDPreviewState` 与输入映射上下文处理。契约与第 2、4 节一致：
+S1（F08-01）为正式对战新建 `ABattlePlayerController`（继承 `AProject_FPSPlayerController`）。当前已迁移 `EnsureBattleHUD`、全部 F09-01／F09-03 显示入口、`HUDPreview`、`HUDPreviewState` 与输入映射上下文处理。契约与第 2、4 节一致：
 
 - 执行端：拥有本地玩家的客户端；Dedicated Server 不创建控件。
 - 权威归属：与模板控制器相同，不改变角色、武器或比赛状态，不发送 RPC。
 - 复用同一控件类 `UBattleHUDWidget` 与 `Content/Script/Client/UI/BattleHUD.lua`。
 - **未迁移** `AShooterPlayerController::OnPawnDestroyed` 的模板重生逻辑；重生由 F06-04 统一调度。`BeginPlay` 也不再写入模板的比例式生命伪数据。
-- 当前职责边界与绑定时机（`OnPossess` 订阅武器／生命事件）**未实现**，待 F05／F06 提供权威状态后接入。
+- F05 武器状态已经接入：`ABattlePlayerController` 订阅当前 `ABattleCharacter` 的 `UBattleWeaponComponent`，驱动弹药和换弹 HUD。
+- F06 生命、受伤、死亡、重生和保护状态尚未接入；四个 F09-03 显示入口已提供，但必须由未来的权威接收方在 RoundId／LifeId 过滤后调用。
 
 | 2026-11-14 | 增加 F09-03 显示入口、Lua 短暂反馈、本地预览和 Pawn 生命周期清理 | 新增四个本地显示入口，无网络协议；正式事件调用方待 F05/F06 | UE 5.8.4 Editor Development 编译及 Lua 5.4.3 语法／流程检查通过；仓库检查仅因缺少 `luac5.4` 未通过；新增画面与双客户端权威联调待验证 |
 | 2026-11-15 | 修复模板角色死亡后未重生；说明关闭预览后恢复实际生命值 | F09-03 显示入口不变；模板重生改为死亡计时器显式调用 Controller，补充无队伍出生点的回退 | UE 5.8.4 Editor Development 编译通过；用户确认实际死亡后重新生成并恢复控制，日志出现 `Template respawn possessed`；新增反馈的完整预览仍待验证 |
 | 2026-11-15 | 下移重生保护面板，避开顶部比分 | 对外契约不变；仅布局纵向位置由 32 调整为 104 | UE 5.8.4 Editor Development 编译通过；用户确认 PIE 中布局调整可用 |
+| 2026-11-17 | 正式 Battle 控制器补齐 F09-03 入口并接入 F05 权威弹药、备用弹药与换弹进度 | 武器组件增加统一状态变化通知；Battle Controller 增加 Pawn／组件绑定、解绑和本地进度计时器；无新 RPC | UE 5.8 `Project_FPSEditor Win64 Development` 编译通过；双端 PIE 待验证；仓库检查仅因缺少 `luac5.4` 未通过 |
