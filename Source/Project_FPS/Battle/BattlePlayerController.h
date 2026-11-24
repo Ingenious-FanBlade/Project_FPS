@@ -81,6 +81,10 @@ public:
 	UFUNCTION(Exec)
 	void BattleTestReload();
 
+	/** 本地调试命令：向前瞬移指定距离，用于验证服务端位移校验与拉回。 */
+	UFUNCTION(Exec)
+	void BattleTestTeleport(float Distance = 1000.0f);
+
 protected:
 
 	virtual void BeginPlay() override;
