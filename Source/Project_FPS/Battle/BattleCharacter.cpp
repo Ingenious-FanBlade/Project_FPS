@@ -9,9 +9,11 @@
 #include "Battle/Data/BattleWeaponDefinition.h"
 #include "Camera/CameraComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "EnhancedInputComponent.h"
 #include "Engine/World.h"
 #include "InputAction.h"
+#include "Net/UnrealNetwork.h"
 #include "Project_FPS.h"
 #include "ShooterWeapon.h"
 #include "TimerManager.h"
@@ -24,16 +26,34 @@ ABattleCharacter::ABattleCharacter()
 	// 武器组件：挂接到根组件，作为枪口与射线起点的稳定父节点。
 	WeaponComponent = CreateDefaultSubobject<UBattleWeaponComponent>(TEXT("Battle Weapon"));
 	WeaponComponent->SetupAttachment(RootComponent);
+
+	// 初始为正常行走速度。
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->MaxWalkSpeed = WalkSpeed;
+	}
 }
 
 void ABattleCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// 出生装备只在服务器执行；角色重建（重生）时会再次触发。
+	// 订阅比赛阶段变化，阶段切换时重新评估移动能力（不依赖 Tick 轮询）。
+	if (UWorld* World = GetWorld())
+	{
+		if (ABattleGameState* BattleGameState = World->GetGameState<ABattleGameState>())
+		{
+			BoundGameState = BattleGameState;
+			BattleGameState->OnMatchPhaseChanged.AddDynamic(this, &ABattleCharacter::HandleMatchPhaseChanged);
+		}
+	}
+
+	// 出生装备与初始移动许可只在服务器执行；角色重建（重生）时会再次触发。
 	if (HasAuthority())
 	{
 		EquipFromDefinition();
+		ApplySprintSpeed();
+		UpdateMovementPermission();
 	}
 }
 
@@ -63,8 +83,28 @@ void ABattleCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 		UE_LOG(LogProject_FPS, Error, TEXT("%s: failed to load default input actions from /Game/Input/Actions."), *GetName());
 	}
 
+	// 冲刺动作复用 Horror 模板资产，避免新增资产或蓝图配置。
+	if (!SprintAction)
+	{
+		SprintAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Variant_Horror/Input/IA_Sprint.IA_Sprint"));
+	}
+	if (!SprintAction)
+	{
+		UE_LOG(LogProject_FPS, Warning, TEXT("%s: failed to load IA_Sprint; sprint input will not bind."), *GetName());
+	}
+
 	// 基类负责移动、观察与跳跃的绑定。
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	// 冲刺绑定：按下/松开分别提交服务器请求。
+	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent))
+	{
+		if (IsValid(SprintAction))
+		{
+			EnhancedInputComponent->BindAction(SprintAction, ETriggerEvent::Started, this, &ABattleCharacter::Input_StartSprint);
+			EnhancedInputComponent->BindAction(SprintAction, ETriggerEvent::Completed, this, &ABattleCharacter::Input_StopSprint);
+		}
+	}
 
 	// TODO(S3-F02/F05-02): 绑定 FireAction 到本地开火流程。
 }
@@ -264,6 +304,7 @@ const TCHAR* ABattleCharacter::GetFireRejectReasonText(EFireRejectReason Reason)
 	case EFireRejectReason::AlreadyReloading: return TEXT("AlreadyReloading");
 	case EFireRejectReason::MagazineFull:     return TEXT("MagazineFull");
 	case EFireRejectReason::NoReserveAmmo:    return TEXT("NoReserveAmmo");
+	case EFireRejectReason::Sprinting:        return TEXT("Sprinting");
 	default:                               return TEXT("Unknown");
 	}
 }
@@ -391,36 +432,44 @@ void ABattleCharacter::Server_Fire_Implementation(
 		return;
 	}
 
-	// 11. ShotId 去重：只接受严格递增的编号，拦截重复与乱序旧包。
+	// 11. 冲刺互斥：冲刺中拒绝开火（M1 取舍：玩家须先松开冲刺键）。
+	//     放在射速之后、ShotId 去重之前，避免无效请求占用去重编号。
+	if (bIsSprinting)
+	{
+		Reject(EFireRejectReason::Sprinting);
+		return;
+	}
+
+	// 12. ShotId 去重：只接受严格递增的编号，拦截重复与乱序旧包。
 	if (ShotId <= WeaponComponent->GetLastAcceptedShotId())
 	{
 		Reject(EFireRejectReason::DuplicateShot);
 		return;
 	}
 
-	// 12. 瞄准参数合理性：方向必须接近单位长度（容差 0.01）。
+	// 13. 瞄准参数合理性：方向必须接近单位长度（容差 0.01）。
 	if (!FMath::IsNearlyEqual(AimViewDir.SizeSquared(), 1.0, 0.01))
 	{
 		Reject(EFireRejectReason::BadAim);
 		return;
 	}
 
-	// 13. 权威扣弹。失败说明状态在期间被改变，按无弹药处理。
+	// 14. 权威扣弹。失败说明状态在期间被改变，按无弹药处理。
 	if (!WeaponComponent->ConsumeAmmo(1))
 	{
 		Reject(EFireRejectReason::NoAmmo);
 		return;
 	}
 
-	// 14. 记录开火状态。
+	// 15. 记录开火状态。
 	WeaponComponent->RecordAcceptedShot(ShotId, ServerTime);
 
 	UE_LOG(LogTemp, Warning, TEXT("Server_Fire: Fired! Ammo: %d"), WeaponComponent->GetMagazineAmmo());
 
-	// 15. 表现通知（本阶段仅日志）。
+	// 16. 表现通知（本阶段仅日志）。
 	Multicast_FireEffect(ShotId, FVector_NetQuantize(GetActorLocation()));
 
-	// 16. 留给 F05-04 的射线检测与伤害提交。
+	// 17. 留给 F05-04 的射线检测与伤害提交。
 	PerformAuthoritativeShot(ShotId, AimViewOrigin, AimViewDir);
 }
 
@@ -540,6 +589,13 @@ void ABattleCharacter::PerformAuthoritativeShot(int32 ShotId, const FVector& Vie
 
 void ABattleCharacter::EndPlay(EEndPlayReason::Type EndPlayReason)
 {
+	// 解绑阶段变化，避免角色销毁后旧回调。
+	if (BoundGameState)
+	{
+		BoundGameState->OnMatchPhaseChanged.RemoveDynamic(this, &ABattleCharacter::HandleMatchPhaseChanged);
+		BoundGameState = nullptr;
+	}
+
 	// 角色销毁（死亡、重生、切图）时清理换弹计时器与状态，避免旧计时器继续执行。
 	if (UWorld* World = GetWorld())
 	{
@@ -745,6 +801,152 @@ void ABattleCharacter::Multicast_ReloadEffect_Implementation(int32 ReloadRequest
 }
 
 //~End F05-05
+
+//~Begin F04-04 冲刺与移动门控
+
+void ABattleCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	// 冲刺状态需要让所有客户端看到（远端角色表现）。
+	DOREPLIFETIME(ABattleCharacter, bIsSprinting);
+}
+
+void ABattleCharacter::Input_StartSprint()
+{
+	// 客户端只提交意图；是否接受由服务器校验链决定。
+	if (!HasAuthority())
+	{
+		Server_SetSprint(true);
+		return;
+	}
+
+	Server_SetSprint_Implementation(true);
+}
+
+void ABattleCharacter::Input_StopSprint()
+{
+	if (!HasAuthority())
+	{
+		Server_SetSprint(false);
+		return;
+	}
+
+	Server_SetSprint_Implementation(false);
+}
+
+void ABattleCharacter::Server_SetSprint_Implementation(bool bWantsSprint)
+{
+	// 1. 权威归属。
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	if (!bWantsSprint)
+	{
+		// 关闭冲刺无条件接受：保证任何校验失败后玩家仍能恢复状态。
+		if (bIsSprinting)
+		{
+			bIsSprinting = false;
+			ApplySprintSpeed();
+		}
+		return;
+	}
+
+	// 2. 阶段许可：不允许移动的阶段也不允许冲刺。
+	const ABattleGameMode* BattleGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ABattleGameMode>() : nullptr;
+	const ABattlePlayerState* BattlePlayerState = GetPlayerState<ABattlePlayerState>();
+	if (!BattleGameMode || !BattlePlayerState || !BattleGameMode->CanMove(BattlePlayerState))
+	{
+		return;
+	}
+
+	// 3. 换弹中不允许冲刺（与武器动作互斥）。
+	if (WeaponComponent && WeaponComponent->IsReloading())
+	{
+		return;
+	}
+
+	if (!bIsSprinting)
+	{
+		bIsSprinting = true;
+		ApplySprintSpeed();
+	}
+}
+
+void ABattleCharacter::OnRep_IsSprinting()
+{
+	// 客户端：冲刺状态变化后同步本地速度表现。
+	ApplySprintSpeed();
+}
+
+void ABattleCharacter::ApplySprintSpeed()
+{
+	// 速度写入的唯一入口，保证服务器与客户端一致。
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->MaxWalkSpeed = bIsSprinting ? SprintSpeed : WalkSpeed;
+	}
+}
+
+void ABattleCharacter::HandleMatchPhaseChanged(EBattleMatchPhase NewPhase)
+{
+	// 两端都更新本地表现；权威的移动禁用只在服务器执行。
+	ApplySprintSpeed();
+
+	if (HasAuthority())
+	{
+		UpdateMovementPermission();
+	}
+}
+
+void ABattleCharacter::UpdateMovementPermission()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	const ABattleGameMode* BattleGameMode = World ? World->GetAuthGameMode<ABattleGameMode>() : nullptr;
+	const ABattlePlayerState* BattlePlayerState = GetPlayerState<ABattlePlayerState>();
+
+	// 无法取得比赛状态时不做限制，避免因初始化顺序误禁用移动。
+	if (!BattleGameMode || !BattlePlayerState)
+	{
+		return;
+	}
+
+	UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!Movement)
+	{
+		return;
+	}
+
+	if (BattleGameMode->CanMove(BattlePlayerState))
+	{
+		// 恢复移动能力。仅当当前处于被禁用状态时才重置，避免打断空中状态。
+		if (Movement->MovementMode == MOVE_None)
+		{
+			Movement->SetMovementMode(MOVE_Walking);
+		}
+		ApplySprintSpeed();
+	}
+	else
+	{
+		// 阶段不允许移动：立即停止并禁用，不依赖客户端自觉。
+		if (bIsSprinting)
+		{
+			bIsSprinting = false;
+			ApplySprintSpeed();
+		}
+		Movement->StopMovementImmediately();
+		Movement->DisableMovement();
+	}
+}
+
+//~End F04-04
 
 #if !UE_BUILD_SHIPPING
 
