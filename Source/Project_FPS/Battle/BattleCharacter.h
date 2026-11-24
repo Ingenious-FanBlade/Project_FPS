@@ -5,8 +5,10 @@
 #include "CoreMinimal.h"
 #include "Project_FPSCharacter.h"
 #include "ShooterWeaponHolder.h"
+#include "BattleTypes.h"
 #include "BattleCharacter.generated.h"
 
+class ABattleGameState;
 class AShooterWeapon;
 class UAnimMontage;
 class UBattleWeaponComponent;
@@ -40,6 +42,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Battle|Input")
 	UInputAction* FireAction;
 
+	/** 冲刺输入动作（复用 Content/Variant_Horror/Input/IA_Sprint）。F04-04 使用。 */
+	UPROPERTY(EditAnywhere, Category = "Battle|Input")
+	UInputAction* SprintAction;
+
 	/** 出生装备的武器配置。为空时不发枪。 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Battle|Weapon")
 	TObjectPtr<UBattleWeaponDefinition> WeaponDefinition;
@@ -51,6 +57,66 @@ protected:
 	/** 激活武器时写入的 AI 感知噪声标签，与模板 Player 标签语义一致。 */
 	UPROPERTY(EditAnywhere, Category = "Battle|Weapon")
 	FName WeaponNoiseOwnerTag = FName("Player");
+
+public:
+
+	//~Begin F04-04 冲刺与移动门控
+
+	/**
+	 * 冲刺状态。服务器权威写入，经属性复制同步到所有客户端（远端也需要表现）。
+	 * 速度应用集中在 ApplySprintSpeed()，保证两端一致。
+	 */
+	UPROPERTY(ReplicatedUsing = OnRep_IsSprinting, BlueprintReadOnly, Category = "Battle|Movement")
+	bool bIsSprinting = false;
+
+	/**
+	 * 客户端冲刺开关请求。低频开关事件，使用可靠 RPC，避免丢失导致状态卡死。
+	 * 服务器会结合比赛阶段与角色状态决定是否接受。
+	 */
+	UFUNCTION(Server, Reliable)
+	void Server_SetSprint(bool bWantsSprint);
+
+	/** 返回是否处于冲刺状态。两端可读。 */
+	UFUNCTION(BlueprintPure, Category = "Battle|Movement")
+	bool IsSprinting() const { return bIsSprinting; }
+
+protected:
+
+	/** 正常行走速度。 */
+	UPROPERTY(EditDefaultsOnly, Category = "Battle|Movement")
+	float WalkSpeed = 300.0f;
+
+	/** 冲刺速度。 */
+	UPROPERTY(EditDefaultsOnly, Category = "Battle|Movement")
+	float SprintSpeed = 600.0f;
+
+	/** 按当前冲刺状态写入 MaxWalkSpeed。两端都在此唯一入口修改速度。 */
+	void ApplySprintSpeed();
+
+	/** 服务器依据比赛阶段更新移动能力。执行端：仅服务器。 */
+	void UpdateMovementPermission();
+
+	/** 比赛阶段变化回调，重新评估移动能力。 */
+	UFUNCTION()
+	void HandleMatchPhaseChanged(EBattleMatchPhase NewPhase);
+
+	/** 冲刺状态客户端通知。 */
+	UFUNCTION()
+	void OnRep_IsSprinting();
+
+	/** 已绑定的阶段变化 GameState，用于安全解绑。 */
+	UPROPERTY(Transient)
+	TObjectPtr<ABattleGameState> BoundGameState;
+
+	/** 本地输入：按下冲刺键。 */
+	void Input_StartSprint();
+
+	/** 本地输入：松开冲刺键。 */
+	void Input_StopSprint();
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	//~End F04-04
 
 protected:
 
@@ -117,6 +183,9 @@ protected:
 		AlreadyReloading,
 		MagazineFull,
 		NoReserveAmmo,
+
+		// F04-04 冲刺互斥新增
+		Sprinting,
 	};
 
 	/** 返回拒绝原因的可读文本。 */

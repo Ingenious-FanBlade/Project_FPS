@@ -202,9 +202,12 @@
 | 8 | 换弹中 | `IsReloading()` 为真则拒绝；字段由 F05-05 写入，当前恒 `false` | `Reloading` |
 | 9 | 弹药 | `GetMagazineAmmo() > 0` | `NoAmmo` |
 | 10 | 射速 | `服务器世界时间 - LastFireServerTime >= FireInterval`（数据资产） | `RefireRate` |
-| 11 | ShotId 去重 | `ShotId > LastAcceptedShotId`（同时拦截重复与乱序旧包） | `DuplicateShot` |
-| 12 | 瞄准合理性 | `AimViewDir` 接近单位长度 | `BadAim` |
-| 13 | 权威扣弹 | `ConsumeAmmo(1)`；失败按 `NoAmmo` 处理 | `NoAmmo` |
+| 11 | **冲刺互斥** | `bIsSprinting == true` 则拒绝（F04-04） | `Sprinting` |
+| 12 | ShotId 去重 | `ShotId > LastAcceptedShotId`（同时拦截重复与乱序旧包） | `DuplicateShot` |
+| 13 | 瞄准合理性 | `AimViewDir` 接近单位长度 | `BadAim` |
+| 14 | 权威扣弹 | `ConsumeAmmo(1)`；失败按 `NoAmmo` 处理 | `NoAmmo` |
+
+第 11 步放在射速之后、去重之前，**不消耗 ShotId 编号**；冲刺规则见[角色移动与行为限制](CharacterMovement.md)。
 
 全部通过后依次：`RecordAcceptedShot(ShotId, ServerTime)` → `Multicast_FireEffect` → `PerformAuthoritativeShot`。
 
@@ -444,6 +447,7 @@ M1／S3 阶段规则由 C++ 实现。Lua 规则接入点（开火、换弹、伤
 | 2026-11-15 | 新增 F05-03 权威开火：`Server_Fire` 不可靠 RPC、13 项校验链、权威扣弹、`Multicast_FireEffect` 占位、`PerformAuthoritativeShot` 空实现、`BattleTestFire` 调试命令 | 新增 `Server_Fire`／`Multicast_FireEffect`／`Server_Fire_Validate`；`ConsumeAmmo`／`RecordAcceptedShot`／`ResetFireState`；`ClientLifeId` 参数已固定但暂不校验 | C++ 编译与仓库文本检查待执行；限流、去重、扣弹待 `BattleTestFire` 验证 |
 | 2026-11-15 | 新增 F05-04 服务器权威射线与命中解析：`GetServerShotOrigin`／`GetServerShotDirection`、`ECC_Visibility` 单线检测、`FBattleShotResult` 参数准备、F06 伤害提交占位；`FBattleShotResult` 定义于 `BattleTypes.h` | 新增 `FBattleShotResult`（跨 F05／F06 契约，未复制）；`ABattleCharacter` 新增两个 protected 查询函数；`PerformAuthoritativeShot` 由空实现变为射线实现；RPC 签名与校验链不变 | C++ 编译与仓库文本检查待执行；命中日志待验证 |
 | 2026-11-15 | 新增 F05-05 换弹与中断：`Server_Reload` 可靠 RPC、10 项校验链、TimerManager 计时、换满为止的弹药转移、`InterruptReload`、`Multicast_ReloadEffect`、`BattleTestReload` 调试命令；`ConsumeAmmo` 增加换弹期防御 | 新增 `Server_Reload`／`Multicast_ReloadEffect`／`Server_Reload_Validate`／`InterruptReload`；组件新增 `BeginReload`／`CompleteReload`／`CancelReload`／`RecordAcceptedReload`／`GetLastAcceptedReloadId`；拒绝原因码追加三项；开火链未改动 | C++ 编译与仓库文本检查待执行；换弹与中断待 `BattleTestReload` 验证 |
+| 2026-11-24 | F04-04 在开火校验链第 11 步新增冲刺互斥（射速后、去重前），拒绝码 `Sprinting`；校验链由 13 项扩为 14 项 | 新增拒绝原因 `Sprinting`；开火链新增一步，其余顺序不变；冲刺契约见 [CharacterMovement.md](CharacterMovement.md) | C++ 编译与仓库文本检查待执行；冲刺中开火拒绝待验证 |
 | 2026-11-15 | 补充 `ClientRoundId` 来源约束：必须取自复制的 `ABattleGameState`，不得从 GameMode 读取 | 契约说明补充，无代码变更 | F05-03 双端验证通过（RoundId=1 双方一致、扣弹正常、Multicast 双端接收） |
 | 2026-11-15 | `BattleTestFire` 从 `ABattleCharacter` 移到 `ABattlePlayerController`（Exec 需挂在 PC 上才能被控制台接收）；新增 `ABattleCharacter::DebugTriggerFire()`；拒绝日志由 `Verbose` 提升为 `Warning` | 新增 `ABattlePlayerController::BattleTestFire`、`ABattleCharacter::DebugTriggerFire`；移除 `ABattleCharacter::BattleTestFire` | 待编译与 PIE 验证 |
 | 2026-11-17 | 将拥有者可见弹药与换弹复制状态接入正式 Battle HUD | 四个状态字段改为统一 RepNotify；新增 `OnWeaponStateChanged`、`ABattleCharacter::GetWeaponReloadDuration()`；不改变服务器写入权威和现有 RPC | UE 5.8 `Project_FPSEditor Win64 Development` 编译通过；双端 PIE 待验证 |
