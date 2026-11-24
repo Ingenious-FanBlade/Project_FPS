@@ -261,6 +261,27 @@ void ABattlePlayerController::BattleTestReload()
 	BattleCharacter->DebugTriggerReload();
 }
 
+void ABattlePlayerController::BattleTestTeleport(float Distance)
+{
+	UE_LOG(LogTemp, Warning, TEXT("TestTeleport: PC Called. LocalController=%s Distance=%.0f"),
+		IsLocalController() ? TEXT("yes") : TEXT("no"), Distance);
+
+	if (!IsLocalController())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestTeleport: not a local controller, aborting."));
+		return;
+	}
+
+	ABattleCharacter* BattleCharacter = GetPawn<ABattleCharacter>();
+	if (!BattleCharacter)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestTeleport: no ABattleCharacter possessed, aborting."));
+		return;
+	}
+
+	BattleCharacter->DebugTeleport(Distance);
+}
+
 void ABattlePlayerController::EnsureBattleHUD()
 {
 	if (!IsLocalPlayerController() || GetNetMode() == NM_DedicatedServer || IsValid(BattleHUD) || !BattleHUDClass)

@@ -32,6 +32,13 @@ ABattleCharacter::ABattleCharacter()
 	{
 		Movement->MaxWalkSpeed = WalkSpeed;
 	}
+
+	// 网络更新频率显式化，便于调参和排查（此前全部使用引擎默认值）。
+	// 使用 setter 以消除 C4996（直接赋值已标记废弃）。
+	PrimaryActorTick.bCanEverTick = true;
+	SetNetUpdateFrequency(100.0f);
+	SetMinNetUpdateFrequency(30.0f);
+	NetPriority = 3.0f;
 }
 
 void ABattleCharacter::BeginPlay()
@@ -54,6 +61,9 @@ void ABattleCharacter::BeginPlay()
 		EquipFromDefinition();
 		ApplySprintSpeed();
 		UpdateMovementPermission();
+
+		// 建立防作弊位移基准，避免出生首帧被误判为瞬移。
+		RecordMovementBaseline();
 	}
 }
 
@@ -596,6 +606,9 @@ void ABattleCharacter::EndPlay(EEndPlayReason::Type EndPlayReason)
 		BoundGameState = nullptr;
 	}
 
+	// 清理防作弊位移基准，避免角色重建后沿用过期的合法位置。
+	bHasMovementBaseline = false;
+
 	// 角色销毁（死亡、重生、切图）时清理换弹计时器与状态，避免旧计时器继续执行。
 	if (UWorld* World = GetWorld())
 	{
@@ -817,7 +830,16 @@ void ABattleCharacter::Input_StartSprint()
 	// 客户端只提交意图；是否接受由服务器校验链决定。
 	if (!HasAuthority())
 	{
-		Server_SetSprint(true);
+		// 本地预测：立即生效，服务器确认或拒绝后再纠正。
+		bLocalSprintPredicted = true;
+		ApplySprintSpeed();
+
+		// 去抖：意图未变化时不重复发送 RPC，避免连按造成状态抖动。
+		if (LastSentSprintIntent != 1)
+		{
+			LastSentSprintIntent = 1;
+			Server_SetSprint(true);
+		}
 		return;
 	}
 
@@ -828,7 +850,14 @@ void ABattleCharacter::Input_StopSprint()
 {
 	if (!HasAuthority())
 	{
-		Server_SetSprint(false);
+		bLocalSprintPredicted = false;
+		ApplySprintSpeed();
+
+		if (LastSentSprintIntent != 0)
+		{
+			LastSentSprintIntent = 0;
+			Server_SetSprint(false);
+		}
 		return;
 	}
 
@@ -859,12 +888,15 @@ void ABattleCharacter::Server_SetSprint_Implementation(bool bWantsSprint)
 	const ABattlePlayerState* BattlePlayerState = GetPlayerState<ABattlePlayerState>();
 	if (!BattleGameMode || !BattlePlayerState || !BattleGameMode->CanMove(BattlePlayerState))
 	{
+		// 拒绝时主动通知拥有者回滚本地预测（不依赖 RepNotify，因为状态未变化不会触发）。
+		Client_SetSprintRejected();
 		return;
 	}
 
 	// 3. 换弹中不允许冲刺（与武器动作互斥）。
 	if (WeaponComponent && WeaponComponent->IsReloading())
 	{
+		Client_SetSprintRejected();
 		return;
 	}
 
@@ -875,9 +907,28 @@ void ABattleCharacter::Server_SetSprint_Implementation(bool bWantsSprint)
 	}
 }
 
+void ABattleCharacter::Client_SetSprintRejected_Implementation()
+{
+	// 只影响本地预测，权威状态以服务器为准。
+	bLocalSprintPredicted = false;
+
+	// 允许玩家松手后再次尝试。
+	LastSentSprintIntent = -1;
+
+	ApplySprintSpeed();
+
+	UE_LOG(LogTemp, Warning, TEXT("%s: sprint request rejected by server; local prediction rolled back."), *GetName());
+}
+
 void ABattleCharacter::OnRep_IsSprinting()
 {
 	// 客户端：冲刺状态变化后同步本地速度表现。
+	// 本地预测与权威不一致时，以权威为准纠正。
+	if (IsLocallyControlled())
+	{
+		bLocalSprintPredicted = bIsSprinting;
+	}
+
 	ApplySprintSpeed();
 }
 
@@ -886,7 +937,12 @@ void ABattleCharacter::ApplySprintSpeed()
 	// 速度写入的唯一入口，保证服务器与客户端一致。
 	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
 	{
-		Movement->MaxWalkSpeed = bIsSprinting ? SprintSpeed : WalkSpeed;
+		// 拥有者客户端使用本地预测值以获得即时反馈；服务器与远端使用权威复制值。
+		const bool bEffectiveSprint = (!HasAuthority() && IsLocallyControlled())
+			? bLocalSprintPredicted
+			: bIsSprinting;
+
+		Movement->MaxWalkSpeed = bEffectiveSprint ? SprintSpeed : WalkSpeed;
 	}
 }
 
@@ -947,6 +1003,111 @@ void ABattleCharacter::UpdateMovementPermission()
 }
 
 //~End F04-04
+
+//~Begin F04-02 服务端移动同步与防作弊
+
+void ABattleCharacter::RecordMovementBaseline()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	LastKnownGoodLocation = GetActorLocation();
+	bHasMovementBaseline = true;
+}
+
+void ABattleCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	// 仅供服务器做位移校验；客户端不做该判定。
+	if (!HasAuthority() || !bHasMovementBaseline)
+	{
+		return;
+	}
+
+	const UCharacterMovementComponent* Movement = GetCharacterMovement();
+	if (!Movement)
+	{
+		return;
+	}
+
+	// 移动被禁用或角色未落地时跳过：此时位置本不应变化，垂直掉落不计入水平校验。
+	if (Movement->MovementMode == MOVE_None)
+	{
+		RecordMovementBaseline();
+		return;
+	}
+
+	// 卡顿帧跳过校验，避免单帧 DeltaTime 过大造成误判。
+	if (DeltaSeconds <= 0.0f || DeltaSeconds > MaxMovementCheckDeltaTime)
+	{
+		RecordMovementBaseline();
+		return;
+	}
+
+	const FVector CurrentLocation = GetActorLocation();
+
+	// 只比较水平 2D 距离，排除跳跃、掉落与台阶带来的垂直位移。
+	const FVector HorizontalDelta(CurrentLocation.X - LastKnownGoodLocation.X, CurrentLocation.Y - LastKnownGoodLocation.Y, 0.0);
+	const float MovedDistance = HorizontalDelta.Size();
+
+	// 理论上限：以角色当前最大行走速度为准，叠加倍率与固定容差。
+	const float MaxAllowedSpeed = FMath::Max(Movement->MaxWalkSpeed, SprintSpeed);
+	const float AllowedDistance = MaxAllowedSpeed * MovementSpeedToleranceRatio * DeltaSeconds + MovementToleranceCms;
+
+	if (MovedDistance <= AllowedDistance)
+	{
+		RecordMovementBaseline();
+		return;
+	}
+
+	// 异常加速或瞬移：立即拉回上一次合法位置。
+	UE_LOG(LogTemp, Warning,
+		TEXT("AntiCheat: %s moved %.1f cm in %.3f s (allowed %.1f cm, speed %.0f). Reverting to %s."),
+		*GetName(), MovedDistance, DeltaSeconds, AllowedDistance, MaxAllowedSpeed, *LastKnownGoodLocation.ToString());
+
+	SetActorLocation(LastKnownGoodLocation, false, nullptr, ETeleportType::TeleportPhysics);
+
+	if (UCharacterMovementComponent* MutableMovement = GetCharacterMovement())
+	{
+		MutableMovement->StopMovementImmediately();
+	}
+
+	// 修正后立即刷新基准，避免下一帧继续判违规。
+	RecordMovementBaseline();
+}
+
+//~End F04-02
+
+void ABattleCharacter::DebugTeleport(float Distance)
+{
+#if UE_BUILD_SHIPPING
+	// Shipping 构建不提供调试能力。
+	(void)Distance;
+#else
+	UE_LOG(LogTemp, Warning, TEXT("DebugTeleport: Character called. LocalControlled=%s Authority=%s Distance=%.0f"),
+		IsLocallyControlled() ? TEXT("yes") : TEXT("no"),
+		HasAuthority() ? TEXT("yes") : TEXT("no"),
+		Distance);
+
+	// 只要求满足“控制该角色的本端”，服务器主机（Listen Server 的 Server 窗口）同样允许，
+	// 因为服务器位置也需要被位移校验覆盖。
+	if (!IsLocallyControlled())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DebugTeleport: this command targets the locally controlled character only."));
+		return;
+	}
+
+	// 在本地移动角色：客户端上会由服务器 Tick 拉回；服务器上则被自身 Tick 拉回。
+	const FVector NewLocation = GetActorLocation() + GetActorForwardVector() * Distance;
+	SetActorLocation(NewLocation, false, nullptr, ETeleportType::TeleportPhysics);
+
+	UE_LOG(LogTemp, Warning, TEXT("DebugTeleport: moved %.0f cm to %s; expecting server revert."),
+		Distance, *NewLocation.ToString());
+#endif
+}
 
 #if !UE_BUILD_SHIPPING
 

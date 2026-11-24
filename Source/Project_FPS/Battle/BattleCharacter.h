@@ -118,6 +118,55 @@ protected:
 
 	//~End F04-04
 
+public:
+
+	//~Begin F04-02 服务端移动同步与防作弊
+
+	/** 冲刺请求被服务器拒绝时，通知拥有者客户端回滚本地预测。 */
+	UFUNCTION(Client, Reliable)
+	void Client_SetSprintRejected();
+
+protected:
+
+	/** 服务器每帧校验水平位移，超出理论上限时拉回上一次合法位置。 */
+	virtual void Tick(float DeltaSeconds) override;
+
+	/** 记录当前位置为合法基准。执行端：仅服务器。 */
+	void RecordMovementBaseline();
+
+	/** 是否已建立合法位置基准。 */
+	bool bHasMovementBaseline = false;
+
+public:
+
+	/** 本地调试：由拥有者客户端向前瞬移，用于触发服务端拉回。实现仅在非 Shipping 构建提供。 */
+	void DebugTeleport(float Distance);
+
+protected:
+
+	/** 上一次被认定合法的服务器位置。 */
+	FVector LastKnownGoodLocation = FVector::ZeroVector;
+
+	/** 水平位移容差（厘米），吸收浮点与碰撞推挤误差。 */
+	UPROPERTY(EditDefaultsOnly, Category = "Battle|AntiCheat")
+	float MovementToleranceCms = 2.0f;
+
+	/** 允许速度相对角色最大速度的倍率容差。 */
+	UPROPERTY(EditDefaultsOnly, Category = "Battle|AntiCheat")
+	float MovementSpeedToleranceRatio = 1.05f;
+
+	/** 单帧 DeltaTime 上限，超过视为卡顿并跳过本帧校验。 */
+	UPROPERTY(EditDefaultsOnly, Category = "Battle|AntiCheat")
+	float MaxMovementCheckDeltaTime = 0.1f;
+
+	/** 本地冲刺预测状态，仅客户端使用，不复制。 */
+	bool bLocalSprintPredicted = false;
+
+	/** 客户端上次提交的冲刺意图，用于避免重复发送 RPC。 */
+	int32 LastSentSprintIntent = -1;
+
+	//~End F04-02
+
 protected:
 
 	/** 出生装备：仅服务器按配置生成武器并初始化弹药。 */

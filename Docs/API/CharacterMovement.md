@@ -1,14 +1,16 @@
-# 角色移动与行为限制接口（F04-04）
+# 角色移动与行为限制接口（F04-02 / F04-04）
 
 ## 1. 模块职责与状态
 
-本模块实现 F04-04 在 S3 范围内的服务端行为限制：冲刺状态与速度、冲刺与开火的互斥、以及依据比赛阶段对移动能力的基础门控。
+本模块实现 F04 在 S3 范围内的服务端移动能力：冲刺状态与速度、冲刺与开火的互斥、依据比赛阶段对移动能力的基础门控，以及服务端水平位移防作弊校验。
 
-- 实现状态：**F04-04 已实现**（冲刺状态复制、服务器权威速度、阶段移动门控、冲刺与开火互斥）。
-- **未实现**：移动预测与远端平滑校正（F04-02）、死亡状态下的行为限制（F06）、结算与菜单阶段（M2 阶段流转）、体力／耐力系统。
+- 实现状态：
+  - **F04-04 已实现**：冲刺状态复制、服务器权威速度、阶段移动门控、冲刺与开火互斥。
+  - **F04-02 已实现（部分）**：网络更新参数显式化、服务端水平位移校验与拉回、冲刺本地预测与服务器拒绝回滚。**移动预测回滚与远端平滑校正未实现**（使用引擎原生 CharacterMovement 路径）。
+- **未实现**：自定义移动预测与回滚、远端平滑参数调优、死亡状态下的行为限制（F06）、结算与菜单阶段（M2 阶段流转）、体力／耐力系统。
 - 调用方：客户端输入提交 `Server_SetSprint`；服务器 `ABattleGameMode::CanMove` 提供阶段许可。
-- 执行端：冲刺状态、速度与移动禁用由**服务器**决定；客户端只做表现同步。
-- 设计依据：[客户端设计第 2 节移动与第一人称表现](../Design/02-client.md#2-移动与第一人称表现)、[玩法设计第 3 节角色与操作](../Design/01-gameplay.md#3-角色与操作)、[服务端设计第 2 节状态归属](../Design/03-server.md#2-状态归属)。
+- 执行端：冲刺状态、速度、移动禁用与位移校验由**服务器**决定；客户端只做预测与表现同步。
+- 设计依据：[客户端设计第 2 节移动与第一人称表现](../Design/02-client.md#2-移动与第一人称表现)、[玩法设计第 3 节角色与操作](../Design/01-gameplay.md#3-角色与操作)、[服务端设计第 2 节状态归属](../Design/03-server.md#2-状态归属)、[服务端设计第 5 节战斗校验](../Design/03-server.md#5-战斗校验)。
 
 相关源码：
 
@@ -113,27 +115,88 @@
 - 资产在 `SetupPlayerInputComponent` 中按路径加载（方案②无蓝图可配置），加载失败打 `Warning` 且不绑定。
 - 绑定方式与既有移动／跳跃输入一致。
 
-## 7. 与设计文档的差异
+## 7. F04-02 网络同步与服务端防作弊
+
+### 7.1 网络参数
+
+| 参数 | 值 | 位置 | 说明 |
+| --- | --- | --- | --- |
+| `bReplicates` | `true` | `ABattleCharacter` 构造函数 | 角色与其组件、移动状态复制到客户端 |
+| `PrimaryActorTick.bCanEverTick` | `true` | 构造函数 | 位移校验依赖 Tick |
+| `NetUpdateFrequency` | `100` | 构造函数（`SetNetUpdateFrequency`） | 与引擎人形角色默认一致，显式化便于调参 |
+| `MinNetUpdateFrequency` | `30` | 构造函数（`SetMinNetUpdateFrequency`） | 空闲时降低带宽 |
+| `NetPriority` | `3.0` | 构造函数 | 玩家角色高于普通 Actor |
+
+移动本身的预测、校正与远端平滑**未自定义**，沿用 `ACharacter`／`CharacterMovement` 原生路径（[客户端设计](../Design/02-client.md#2-移动与第一人称表现)）。
+
+### 7.2 服务端水平位移校验
+
+服务器 `Tick` 每帧执行一次，O(1) 开销：
+
+| 步骤 | 内容 |
+| --- | --- |
+| 跳过条件 | 非服务器、无基准、`MovementMode == MOVE_None`、`DeltaSeconds <= 0` 或 `> MaxMovementCheckDeltaTime`（默认 `0.1` 秒） |
+| 测量对象 | **水平 2D 距离**（忽略 Z），排除跳跃、掉落与台阶的垂直位移 |
+| 理论上限 | `Max(MaxWalkSpeed, SprintSpeed) * MovementSpeedToleranceRatio(1.05) * DeltaTime + MovementToleranceCms(2.0)` |
+| 超限处理 | `SetActorLocation(LastKnownGoodLocation, TeleportPhysics)` → `StopMovementImmediately()` → `Warning` 日志 → 立即刷新基准 |
+| 正常处理 | 刷新 `LastKnownGoodLocation` 为当前位置 |
+
+- **一次超限即拉回**，不累积违规次数（课程项目要求最直接的反馈）。
+- 跳过卡顿帧与禁用移动的状态，避免误判。
+- 拉回后立即刷新基准，防止连续误判。
+- 基准在 `BeginPlay`（服务器）、`EndPlay` 清理，角色重建时重新建立。
+
+### 7.3 冲刺预测与去抖
+
+| 机制 | 实现 |
+| --- | --- |
+| 本地预测 | 拥有者客户端按下 Shift **立即**按冲刺速度移动（`bLocalSprintPredicted`，不复制） |
+| 意图去抖 | `LastSentSprintIntent` 记录上次提交的意图，相同则不重复发送 RPC，避免连按抖动 |
+| 权威纠正 | `OnRep_IsSprinting` 到达时以权威值覆盖本地预测 |
+| 拒绝回滚 | 服务器校验失败时调用 `Client_SetSprintRejected()`，客户端立即回滚预测 |
+
+`Client_SetSprintRejected` 为 **Reliable Client RPC**：由于拒绝时 `bIsSprinting` 不变、RepNotify 不会触发，必须由该 RPC 主动通知（[服务端设计](../Design/03-server.md#4-操作请求与同步)）。
+
+### 7.4 调试命令
+
+| 命令 | 位置 | 行为 |
+| --- | --- | --- |
+| `BattleTestTeleport [Distance]` | `ABattlePlayerController` | 对**本端控制的角色**沿朝向前移指定距离（默认 `1000` cm），用于触发服务端拉回 |
+
+- 执行条件仅为 `IsLocallyControlled()`，**不限制 `HasAuthority()`**：Listen Server 的 Server 窗口中该角色同样受控，其位置也需要被位移校验覆盖。
+- 客户端上由服务器 `Tick` 拉回；服务器上由自身 `Tick` 拉回（服务器权威位置变化同样要被校验）。
+- 仅非 Shipping 构建提供实现；预期打印 `AntiCheat: ... moved ... Reverting to ...` 的 `Warning`。
+
+## 8. 与设计文档的差异
 
 | 设计描述 | 当前实现 | 说明 |
 | --- | --- | --- |
-| `02-client.md:52`「冲刺作为移动状态接入移动预测数据」 | 仅复制 `bIsSprinting` 并同步 `MaxWalkSpeed` | 属 F04-02 范围，未实现预测 |
+| `02-client.md:52`「冲刺作为移动状态接入移动预测数据」 | 复制 `bIsSprinting` + 本地轻量预测 + 同步 `MaxWalkSpeed` | 未接入 CharacterMovement 的预测状态机，无回滚 |
 | `01-gameplay.md:48`「冲刺与射击互斥，按下射击时结束冲刺」 | 冲刺中开火被**拒绝**，不会自动结束冲刺 | M1 取舍，服务端逻辑更简单；后续可改为自动取消 |
-| 设计未规定数值 | `300`／`600` cm/s | 按需求给定，可在默认值中调整 |
+| 设计未规定数值 | `300`／`600` cm/s；容差 `1.05` 与 `2.0` cm | 按需求给定，可在默认值中调整 |
+| 设计未规定反作弊强度 | 单次超限即拉回 | 课程项目取舍，未实现违规累积与封禁 |
 
-## 8. 未实现与待验证
+## 9. 未实现与待验证
 
 | 项 | 状态 |
 | --- | --- |
-| 移动预测、服务器校正与远端平滑（F04-02） | 未实现 |
+| 自定义移动预测回滚（F04-02 深层部分） | 未实现；沿用引擎原生校正 |
+| 远端平滑参数调优 | 未实现；使用引擎默认 `Exponential` |
+| 垂直方向（飞行／穿墙）作弊校验 | 未实现；仅校验水平位移 |
+| 违规累积与封禁 | 未实现；不按需求 |
 | 死亡状态禁止移动／冲刺（F06） | 未实现；仅冲刺请求占位 |
 | 结算／中止阶段的真实流转（M2） | 未实现；`CanMove` 已返回 false，但阶段尚不会进入 |
 | 体力／耐力限制 | 未实现；设计未要求首版 |
 | 冲刺表现（动画、音效、视场变化） | 未实现；属客户端 F04-03 |
 | 双端速度同步与阶段门控 | 待验证 |
+| 防作弊拉回与日志 | 待验证（`BattleTestTeleport`） |
+| 冲刺预测与拒绝回滚 | 待验证 |
 
-## 9. 变更记录
+## 10. 变更记录
 
 | 日期 | 变更 | 接口影响 | 验证状态 |
 | --- | --- | --- | --- |
 | 2026-11-24 | 新建 F04-04：冲刺复制状态、可靠冲刺 RPC、服务器权威速度、阶段移动门控、冲刺与开火互斥 | 新增 `bIsSprinting`（复制）、`Server_SetSprint`、`IsSprinting`、`ApplySprintSpeed`、`UpdateMovementPermission`；开火校验链新增第 11 步与拒绝码 `Sprinting` | C++ 编译与仓库文本检查待执行；双端同步与门控待验证 |
+| 2026-11-24 | 新增 F04-02：网络参数显式化、服务端水平位移校验与拉回、冲刺本地预测与去抖、`Client_SetSprintRejected` 拒绝回滚、`BattleTestTeleport` 调试命令 | 新增 `Client_SetSprintRejected`（Reliable Client RPC）、`Tick` 防作弊校验、`RecordMovementBaseline`、`BattleTestTeleport`；`ApplySprintSpeed` 区分本地预测与权威值；冲刺 RPC 发送增加意图去抖 | C++ 编译与仓库文本检查待执行；防作弊拉回与预测回滚待验证 |
+| 2026-11-24 | 修正：`BattleTestTeleport` 执行条件放宽为仅 `IsLocallyControlled()`（允许 Listen Server 主机自检）；网络更新频率改用 `SetNetUpdateFrequency`／`SetMinNetUpdateFrequency` 消除 C4996 | 调试命令的宿主范围扩大，服务端校验逻辑不变；网络参数取值不变 | 待编译与联机验证 |
+
