@@ -425,7 +425,7 @@ M1／S3 阶段规则由 C++ 实现。Lua 规则接入点（开火、换弹、伤
 | `VictimLifeId` 填充 | 未实现；待 F06 提供 LifeId |
 | 换弹开始／结束、弹药转移、中断（F05-05） | **已实现**（见第 9 节）；主动取消刻意不实现 |
 | 换弹动画与音效 | 未实现；属 F05-02 |
-| 拥有者 HUD 弹药与换弹进度 | **已实现代码接入**；复制与双端渲染待运行验证 |
+| 拥有者 HUD 弹药与换弹进度 | **已实现代码接入**；2026-11-25 用户确认弹匣与备用弹药的双客户端 `COND_OwnerOnly` 隔离有效；换弹状态与进度、开火扣弹及换弹转移显示仍待分别验证 |
 | 死亡触发的换弹中断 | 未实现；`InterruptReload` 已提供，待 F06 调用 |
 | 比赛结束触发的换弹中断 | 未实现；待 M2 阶段流转通知 |
 | 存活校验（F06） | 占位为存活，恒不拒绝 |
@@ -433,7 +433,7 @@ M1／S3 阶段规则由 C++ 实现。Lua 规则接入点（开火、换弹、伤
 | `Multicast_ReloadEffect` 的实际表现 | 当前仅日志，无换弹动作 |
 | 武器 Actor 自身是否复制 | 保持不复制；玩家弹道改为服务器射线后，武器 Actor 仅承担表现 |
 | 数据资产实例 | 需在编辑器创建（C++ 类无默认资产） |
-| 双端装备与弹药复制 | 待验证 |
+| 双端装备与弹药复制 | 部分验证：弹匣与备用弹药的双客户端拥有者隔离有效；装备表现及完整状态变化仍待验证 |
 | Dedicated Server 上的装备与开火流程 | 待验证 |
 | `BattleTestFire` 验证限流／去重／扣弹 | **已验证**（Development 构建，双端 PIE） |
 | 射线命中日志与实际命中结果 | 待验证 |
@@ -451,3 +451,4 @@ M1／S3 阶段规则由 C++ 实现。Lua 规则接入点（开火、换弹、伤
 | 2026-11-15 | 补充 `ClientRoundId` 来源约束：必须取自复制的 `ABattleGameState`，不得从 GameMode 读取 | 契约说明补充，无代码变更 | F05-03 双端验证通过（RoundId=1 双方一致、扣弹正常、Multicast 双端接收） |
 | 2026-11-15 | `BattleTestFire` 从 `ABattleCharacter` 移到 `ABattlePlayerController`（Exec 需挂在 PC 上才能被控制台接收）；新增 `ABattleCharacter::DebugTriggerFire()`；拒绝日志由 `Verbose` 提升为 `Warning` | 新增 `ABattlePlayerController::BattleTestFire`、`ABattleCharacter::DebugTriggerFire`；移除 `ABattleCharacter::BattleTestFire` | 待编译与 PIE 验证 |
 | 2026-11-17 | 将拥有者可见弹药与换弹复制状态接入正式 Battle HUD | 四个状态字段改为统一 RepNotify；新增 `OnWeaponStateChanged`、`ABattleCharacter::GetWeaponReloadDuration()`；不改变服务器写入权威和现有 RPC | UE 5.8 `Project_FPSEditor Win64 Development` 编译通过；双端 PIE 待验证 |
+| 2026-11-25 | 补充拥有者可见弹药的双客户端隔离验证记录 | 对外契约不变 | 用户确认弹匣与备用弹药在双客户端之间保持 `COND_OwnerOnly` 隔离；换弹状态与进度、开火扣弹、换弹转移、装备表现和 Dedicated Server 路径不在本次验证范围内 |
