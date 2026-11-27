@@ -122,7 +122,17 @@ void UBattleHUDWidget::SetHealthDisplay(float CurrentHealth, float MaxHealth)
 		return;
 	}
 
-	const float SafeMaxHealth = FMath::Max(0.0f, MaxHealth);
+	// 0 或非法上限表示当前没有可用的权威生命快照。该状态用于 Pawn 尚未就绪、
+	// 生命组件未复制或旧 Pawn 已解绑时，避免继续显示上一生命期的数值。
+	if (!FMath::IsFinite(CurrentHealth) || !FMath::IsFinite(MaxHealth) || MaxHealth <= 0.0f)
+	{
+		HealthText->SetText(LOCTEXT("HealthUnavailable", "生命  -- / --"));
+		HealthBar->SetPercent(0.0f);
+		HealthBar->SetFillColorAndOpacity(FLinearColor(0.15f, 0.78f, 0.35f, 1.0f));
+		return;
+	}
+
+	const float SafeMaxHealth = MaxHealth;
 	const float SafeCurrentHealth = FMath::Clamp(CurrentHealth, 0.0f, SafeMaxHealth);
 	const float HealthPercent = SafeMaxHealth > 0.0f ? SafeCurrentHealth / SafeMaxHealth : 0.0f;
 
