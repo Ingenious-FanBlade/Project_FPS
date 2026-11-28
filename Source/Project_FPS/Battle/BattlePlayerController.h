@@ -85,6 +85,18 @@ public:
 	UFUNCTION(Exec)
 	void BattleTestTeleport(float Distance = 1000.0f);
 
+	/**
+	 * 本地调试命令：强制切换比赛阶段。
+	 * 参数为 EBattleMatchPhase 的数值（0=None,1=Waiting,2=Countdown,3=InProgress,4=Ended,5=Aborted,6=Resetting）。
+	 * 任意窗口可执行：客户端调用会经 Server RPC 转发到服务器执行。
+	 */
+	UFUNCTION(Exec)
+	void BattleTestPhase(int32 PhaseValue);
+
+	/** 调试用：客户端请求服务器切换比赛阶段。 */
+	UFUNCTION(Server, Reliable)
+	void Server_BattleTestPhase(int32 PhaseValue);
+
 protected:
 
 	virtual void BeginPlay() override;

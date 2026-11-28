@@ -948,12 +948,94 @@ void ABattleCharacter::ApplySprintSpeed()
 
 void ABattleCharacter::HandleMatchPhaseChanged(EBattleMatchPhase NewPhase)
 {
+	// 识别“离开 InProgress”：结算、中止、重置等阶段都走同一套清理。
+	// 两端都执行表现层清理；权威清理只在服务器执行。
+	const bool bLeftActive = (LastKnownPhase == EBattleMatchPhase::InProgress)
+		&& (NewPhase != EBattleMatchPhase::InProgress);
+
+	if (bLeftActive)
+	{
+		HandlePhaseExitActive(NewPhase);
+	}
+
 	// 两端都更新本地表现；权威的移动禁用只在服务器执行。
 	ApplySprintSpeed();
 
 	if (HasAuthority())
 	{
 		UpdateMovementPermission();
+		UpdateInputPermission();
+	}
+
+	LastKnownPhase = NewPhase;
+}
+
+void ABattleCharacter::HandlePhaseExitActive(EBattleMatchPhase NewPhase)
+{
+	UE_LOG(LogTemp, Warning, TEXT("%s: match phase InProgress -> %s; cleaning up."),
+		*GetName(), *StaticEnum<EBattleMatchPhase>()->GetNameStringByValue(static_cast<int64>(NewPhase)));
+
+	// 1. 中断换弹：清计时器、清换弹状态，不落弹药（沿用 F05-05 原子性）。
+	if (HasAuthority())
+	{
+		InterruptReload(TEXT("PhaseExit"));
+	}
+
+	// 2. 取消冲刺并复位速度。
+	bLocalSprintPredicted = false;
+	bIsSprinting = false;
+	ApplySprintSpeed();
+
+	// 3. 停止并禁用移动。服务器侧是真正的限制。
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->StopMovementImmediately();
+
+		if (HasAuthority())
+		{
+			Movement->DisableMovement();
+		}
+	}
+
+	// 4. 禁用输入：仅拥有者客户端有效，作为表现层配合；
+	//    服务端权威仍由移动禁用与 CanAttack 拒绝保证。
+	//    DisableInput 只接受 APlayerController，GetController 返回 AController，需安全转型。
+	if (APlayerController* OwningPlayerController = Cast<APlayerController>(GetController()))
+	{
+		DisableInput(OwningPlayerController);
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("%s: phase exit cleanup done (reload interrupted, sprint off, movement+input disabled)."),
+		*GetName());
+}
+
+void ABattleCharacter::UpdateInputPermission()
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	const ABattleGameMode* BattleGameMode = World ? World->GetAuthGameMode<ABattleGameMode>() : nullptr;
+	const ABattlePlayerState* BattlePlayerState = GetPlayerState<ABattlePlayerState>();
+
+	// EnableInput／DisableInput 只接受 APlayerController，需从 AController 安全转型。
+	APlayerController* OwningPlayerController = Cast<APlayerController>(GetController());
+
+	if (!BattleGameMode || !BattlePlayerState || !OwningPlayerController)
+	{
+		return;
+	}
+
+	// 与移动许可保持一致：允许移动的阶段同时恢复输入。
+	if (BattleGameMode->CanMove(BattlePlayerState))
+	{
+		EnableInput(OwningPlayerController);
+	}
+	else
+	{
+		DisableInput(OwningPlayerController);
 	}
 }
 
@@ -1057,16 +1139,25 @@ void ABattleCharacter::Tick(float DeltaSeconds)
 	const float MaxAllowedSpeed = FMath::Max(Movement->MaxWalkSpeed, SprintSpeed);
 	const float AllowedDistance = MaxAllowedSpeed * MovementSpeedToleranceRatio * DeltaSeconds + MovementToleranceCms;
 
+	// 未超过上限：正常。
 	if (MovedDistance <= AllowedDistance)
 	{
 		RecordMovementBaseline();
 		return;
 	}
 
-	// 异常加速或瞬移：立即拉回上一次合法位置。
+	// 超过上限但未达到拉回阈值：视为网络抖动，只记录基准，不拉回，避免画面抖动。
+	const float ExcessDistance = MovedDistance - AllowedDistance;
+	if (ExcessDistance < MovementRevertExcessThresholdCms)
+	{
+		RecordMovementBaseline();
+		return;
+	}
+
+	// 超出阈值达到拉回条件：执行服务端校正。
 	UE_LOG(LogTemp, Warning,
-		TEXT("AntiCheat: %s moved %.1f cm in %.3f s (allowed %.1f cm, speed %.0f). Reverting to %s."),
-		*GetName(), MovedDistance, DeltaSeconds, AllowedDistance, MaxAllowedSpeed, *LastKnownGoodLocation.ToString());
+		TEXT("AntiCheat: %s moved %.1f cm in %.3f s (allowed %.1f cm, excess %.1f cm, speed %.0f). Reverting to %s."),
+		*GetName(), MovedDistance, DeltaSeconds, AllowedDistance, ExcessDistance, MaxAllowedSpeed, *LastKnownGoodLocation.ToString());
 
 	SetActorLocation(LastKnownGoodLocation, false, nullptr, ETeleportType::TeleportPhysics);
 

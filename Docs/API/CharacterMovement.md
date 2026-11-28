@@ -137,7 +137,8 @@
 | --- | --- |
 | 跳过条件 | 非服务器、无基准、`MovementMode == MOVE_None`、`DeltaSeconds <= 0` 或 `> MaxMovementCheckDeltaTime`（默认 `0.1` 秒） |
 | 测量对象 | **水平 2D 距离**（忽略 Z），排除跳跃、掉落与台阶的垂直位移 |
-| 理论上限 | `Max(MaxWalkSpeed, SprintSpeed) * MovementSpeedToleranceRatio(1.05) * DeltaTime + MovementToleranceCms(2.0)` |
+| 理论上限 | `Max(MaxWalkSpeed, SprintSpeed) * MovementSpeedToleranceRatio(1.5) * DeltaTime + MovementToleranceCms(10.0)` |
+| 抖动忽略 | 超出上限但**不足 `MovementRevertExcessThresholdCms`(50.0)** 时视为网络抖动，仅刷新基准不拉回 |
 | 超限处理 | `SetActorLocation(LastKnownGoodLocation, TeleportPhysics)` → `StopMovementImmediately()` → `Warning` 日志 → 立即刷新基准 |
 | 正常处理 | 刷新 `LastKnownGoodLocation` 为当前位置 |
 
@@ -167,16 +168,65 @@
 - 客户端上由服务器 `Tick` 拉回；服务器上由自身 `Tick` 拉回（服务器权威位置变化同样要被校验）。
 - 仅非 Shipping 构建提供实现；预期打印 `AntiCheat: ... moved ... Reverting to ...` 的 `Warning`。
 
-## 8. 与设计文档的差异
+## 8. 比赛阶段切换时的清理（M2）
+
+### 8.1 触发与流程
+
+`ABattleCharacter` 订阅 `ABattleGameState::OnMatchPhaseChanged`（`BeginPlay` 订阅、`EndPlay` 解绑）。当记录的上一次阶段为 `InProgress`、新阶段不是 `InProgress` 时执行清理。
+
+| 步骤 | 动作 | 执行端 |
+| --- | --- | --- |
+| 1 | `InterruptReload("PhaseExit")`：清换弹计时器与状态，**不落弹药** | 仅服务器 |
+| 2 | `bIsSprinting = false`、`bLocalSprintPredicted = false`、`ApplySprintSpeed()` 复位为 `WalkSpeed` | 两端 |
+| 3 | `StopMovementImmediately()`，服务器额外 `DisableMovement()` | 两端（权威禁用仅服务器） |
+| 4 | `DisableInput(GetController())` | 两端 |
+
+之后统一调用 `UpdateMovementPermission()` 与 `UpdateInputPermission()` 处理恢复：阶段允许移动时 `SetMovementMode(MOVE_Walking)` + `EnableInput(GetController())`。
+
+### 8.2 统一清理
+
+`Ended`、`Aborted`、`Resetting` **不区分清理内容**，统一执行上述四步。M1／M2 不做按阶段细分，避免过度设计。
+
+### 8.3 输入禁用的权威性限制
+
+`APawn::DisableInput` 在**服务器上对拥有者客户端无效**：输入组件位于客户端，服务器无法远程关闭。因此分两层：
+
+| 层 | 实现 | 权威性 |
+| --- | --- | --- |
+| 服务端权威 | `DisableMovement()` + 开火／换弹的 `CanAttack` 拒绝 | 真正的限制 |
+| 客户端表现 | 客户端在阶段回调中同样调用 `DisableInput` | 仅表现，可被改客户端绕过 |
+
+依据[总览 F04-04](../Design/00-overview.md#63-可认领的功能与模块清单)「不能只依赖客户端禁用输入」。
+
+### 8.4 调试命令
+
+| 命令 | 位置 | 行为 |
+| --- | --- | --- |
+| `BattleTestPhase <PhaseValue>` | `ABattlePlayerController` | 强制切换比赛阶段，任意窗口可执行 |
+
+`PhaseValue` 取值：`0=None`、`1=Waiting`、`2=Countdown`、`3=InProgress`、`4=Ended`、`5=Aborted`、`6=Resetting`。
+
+执行路径：
+
+| 执行窗口 | 路径 |
+| --- | --- |
+| Server 窗口（`HasAuthority()`） | 直接调用 `Server_BattleTestPhase_Implementation` |
+| Client 窗口（`IsLocalController()`） | 通过 **Reliable Server RPC** `Server_BattleTestPhase` 转发到服务器执行 |
+
+`Server_BattleTestPhase_Implementation` 内部再次校验 `HasAuthority()` 与枚举值合法，然后调用 `ABattleGameState::SetMatchPhase`。
+
+> 该命令仅用于 M2 阶段流转实现前的自测；阶段流转正式实现后（由他人负责）应改用真实流程验证。
+
+## 9. 与设计文档的差异
 
 | 设计描述 | 当前实现 | 说明 |
 | --- | --- | --- |
 | `02-client.md:52`「冲刺作为移动状态接入移动预测数据」 | 复制 `bIsSprinting` + 本地轻量预测 + 同步 `MaxWalkSpeed` | 未接入 CharacterMovement 的预测状态机，无回滚 |
 | `01-gameplay.md:48`「冲刺与射击互斥，按下射击时结束冲刺」 | 冲刺中开火被**拒绝**，不会自动结束冲刺 | M1 取舍，服务端逻辑更简单；后续可改为自动取消 |
-| 设计未规定数值 | `300`／`600` cm/s；容差 `1.05` 与 `2.0` cm | 按需求给定，可在默认值中调整 |
+| 设计未规定数值 | `300`／`600` cm/s；倍率 `1.5`、基础容差 `10.0` cm、拉回阈值 `50.0` cm | 按需求给定，可在默认值中调整 |
 | 设计未规定反作弊强度 | 单次超限即拉回 | 课程项目取舍，未实现违规累积与封禁 |
 
-## 9. 未实现与待验证
+## 10. 未实现与待验证
 
 | 项 | 状态 |
 | --- | --- |
@@ -185,18 +235,21 @@
 | 垂直方向（飞行／穿墙）作弊校验 | 未实现；仅校验水平位移 |
 | 违规累积与封禁 | 未实现；不按需求 |
 | 死亡状态禁止移动／冲刺（F06） | 未实现；仅冲刺请求占位 |
-| 结算／中止阶段的真实流转（M2） | 未实现；`CanMove` 已返回 false，但阶段尚不会进入 |
+| 结算／中止阶段的真实流转（M2） | 未实现；阶段流转由他人负责，`CanMove` 已返回 false，可用 `BattleTestPhase` 强制模拟 |
 | 体力／耐力限制 | 未实现；设计未要求首版 |
 | 冲刺表现（动画、音效、视场变化） | 未实现；属客户端 F04-03 |
 | 双端速度同步与阶段门控 | 待验证 |
 | 防作弊拉回与日志 | 待验证（`BattleTestTeleport`） |
 | 冲刺预测与拒绝回滚 | 待验证 |
+| 阶段离开 `InProgress` 的清理（换弹中断、冲刺复位、移动与输入禁用） | 待验证（`BattleTestPhase`） |
 
-## 10. 变更记录
+## 11. 变更记录
 
 | 日期 | 变更 | 接口影响 | 验证状态 |
 | --- | --- | --- | --- |
 | 2026-11-24 | 新建 F04-04：冲刺复制状态、可靠冲刺 RPC、服务器权威速度、阶段移动门控、冲刺与开火互斥 | 新增 `bIsSprinting`（复制）、`Server_SetSprint`、`IsSprinting`、`ApplySprintSpeed`、`UpdateMovementPermission`；开火校验链新增第 11 步与拒绝码 `Sprinting` | C++ 编译与仓库文本检查待执行；双端同步与门控待验证 |
 | 2026-11-24 | 新增 F04-02：网络参数显式化、服务端水平位移校验与拉回、冲刺本地预测与去抖、`Client_SetSprintRejected` 拒绝回滚、`BattleTestTeleport` 调试命令 | 新增 `Client_SetSprintRejected`（Reliable Client RPC）、`Tick` 防作弊校验、`RecordMovementBaseline`、`BattleTestTeleport`；`ApplySprintSpeed` 区分本地预测与权威值；冲刺 RPC 发送增加意图去抖 | C++ 编译与仓库文本检查待执行；防作弊拉回与预测回滚待验证 |
 | 2026-11-24 | 修正：`BattleTestTeleport` 执行条件放宽为仅 `IsLocallyControlled()`（允许 Listen Server 主机自检）；网络更新频率改用 `SetNetUpdateFrequency`／`SetMinNetUpdateFrequency` 消除 C4996 | 调试命令的宿主范围扩大，服务端校验逻辑不变；网络参数取值不变 | 待编译与联机验证 |
+| 2026-11-28 | 新增 M2 阶段清理：离开 `InProgress` 时中断换弹、取消冲刺、禁用移动与输入；新增 `UpdateInputPermission`；新增 `BattleTestPhase` 调试命令 | 新增 `HandlePhaseExitActive`、`UpdateInputPermission`、`LastKnownPhase`、`BattleTestPhase`；既有 RPC 与校验链不变 | C++ 编译与仓库文本检查待执行；阶段清理待 `BattleTestPhase` 验证 |
+| 2026-11-28 | 修正：`BattleTestPhase` 改为任意窗口可用（客户端经 `Server_BattleTestPhase` 可靠 RPC 转发）；防作弊容差放宽为倍率 `1.5`、基础 `10.0` cm，并新增 `MovementRevertExcessThresholdCms=50.0` 抖动忽略阈值 | 新增 `Server_BattleTestPhase`（Reliable Server RPC）与 `MovementRevertExcessThresholdCms` 配置项；校验公式语义不变，阈值调整；`MovementSpeedToleranceRatio` 1.05→1.5、`MovementToleranceCms` 2.0→10.0 | C++ 编译与仓库文本检查待执行；正常移动不再误杀、瞬移仍被拉回待验证 |
 
