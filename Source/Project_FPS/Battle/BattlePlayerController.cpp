@@ -3,6 +3,8 @@
 #include "Battle/BattlePlayerController.h"
 
 #include "Battle/BattleCharacter.h"
+#include "Battle/BattleGameState.h"
+#include "Battle/BattleTypes.h"
 #include "Battle/Components/BattleWeaponComponent.h"
 #include "BattleHUDWidget.h"
 #include "GameFramework/GameStateBase.h"
@@ -280,6 +282,63 @@ void ABattlePlayerController::BattleTestTeleport(float Distance)
 	}
 
 	BattleCharacter->DebugTeleport(Distance);
+}
+
+void ABattlePlayerController::BattleTestPhase(int32 PhaseValue)
+{
+	UE_LOG(LogTemp, Warning, TEXT("TestPhase: PC Called. PhaseValue=%d Authority=%s LocalController=%s"),
+		PhaseValue, HasAuthority() ? TEXT("yes") : TEXT("no"),
+		IsLocalController() ? TEXT("yes") : TEXT("no"));
+
+	const UEnum* PhaseEnum = StaticEnum<EBattleMatchPhase>();
+	if (!PhaseEnum || !PhaseEnum->IsValidEnumValue(PhaseValue))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestPhase: invalid phase value %d (expected 0-6)."), PhaseValue);
+		return;
+	}
+
+	// 服务器窗口直接执行；客户端窗口经 Server RPC 转发到服务器执行。
+	if (HasAuthority())
+	{
+		Server_BattleTestPhase_Implementation(PhaseValue);
+	}
+	else if (IsLocalController())
+	{
+		Server_BattleTestPhase(PhaseValue);
+		UE_LOG(LogTemp, Warning, TEXT("TestPhase: forwarded to server via RPC."));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestPhase: not a local controller, aborting."));
+	}
+}
+
+void ABattlePlayerController::Server_BattleTestPhase_Implementation(int32 PhaseValue)
+{
+	// 只有服务器可以提交阶段。
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const UEnum* PhaseEnum = StaticEnum<EBattleMatchPhase>();
+	if (!PhaseEnum || !PhaseEnum->IsValidEnumValue(PhaseValue))
+	{
+		return;
+	}
+
+	ABattleGameState* BattleGameState = GetWorld() ? GetWorld()->GetGameState<ABattleGameState>() : nullptr;
+	if (!BattleGameState)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("TestPhase: ABattleGameState not available."));
+		return;
+	}
+
+	const EBattleMatchPhase NewPhase = static_cast<EBattleMatchPhase>(PhaseValue);
+	BattleGameState->SetMatchPhase(NewPhase, 0.0);
+
+	UE_LOG(LogTemp, Warning, TEXT("TestPhase: server set phase -> %s."),
+		*PhaseEnum->GetNameStringByValue(PhaseValue));
 }
 
 void ABattlePlayerController::EnsureBattleHUD()

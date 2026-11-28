@@ -108,6 +108,15 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<ABattleGameState> BoundGameState;
 
+	/** 上一次已知的比赛阶段，用于识别“离开 InProgress”。 */
+	EBattleMatchPhase LastKnownPhase = EBattleMatchPhase::None;
+
+	/** 阶段离开 InProgress 时执行清理：中断换弹、取消冲刺、禁用移动与输入。执行端：仅服务器。 */
+	void HandlePhaseExitActive(EBattleMatchPhase NewPhase);
+
+	/** 依据当前阶段设置或恢复输入可用状态。执行端：仅服务器（对拥有者客户端生效）。 */
+	void UpdateInputPermission();
+
 	/** 本地输入：按下冲刺键。 */
 	void Input_StartSprint();
 
@@ -149,11 +158,15 @@ protected:
 
 	/** 水平位移容差（厘米），吸收浮点与碰撞推挤误差。 */
 	UPROPERTY(EditDefaultsOnly, Category = "Battle|AntiCheat")
-	float MovementToleranceCms = 2.0f;
+	float MovementToleranceCms = 10.0f;
 
-	/** 允许速度相对角色最大速度的倍率容差。 */
+	/** 允许速度相对角色最大速度的倍率容差（1.5 = 允许 50% 网络抖动余量）。 */
 	UPROPERTY(EditDefaultsOnly, Category = "Battle|AntiCheat")
-	float MovementSpeedToleranceRatio = 1.05f;
+	float MovementSpeedToleranceRatio = 1.5f;
+
+	/** 超出理论上限至少该距离才执行拉回校正，低于此值视为抖动并忽略。 */
+	UPROPERTY(EditDefaultsOnly, Category = "Battle|AntiCheat")
+	float MovementRevertExcessThresholdCms = 50.0f;
 
 	/** 单帧 DeltaTime 上限，超过视为卡顿并跳过本帧校验。 */
 	UPROPERTY(EditDefaultsOnly, Category = "Battle|AntiCheat")

@@ -392,12 +392,20 @@ F06 接入要求：
 | --- | --- |
 | 角色 `EndPlay`（销毁、重生、切图） | **已实现** |
 | 死亡 | **未实现**，待 F06 调用 `InterruptReload` |
-| 比赛结束／阶段离开 `InProgress` | **未实现**，待 M2 阶段流转通知 |
+| 比赛结束／阶段离开 `InProgress` | **已实现**：`ABattleCharacter::HandlePhaseExitActive` 调用 `InterruptReload("PhaseExit")`，见[角色移动与行为限制第 8 节](CharacterMovement.md) |
 
 ### 9.6 与开火的关系
 
 - 开火校验链第 8 步已拦截 `IsReloading()`，**未修改开火链**。
 - `UBattleWeaponComponent::ConsumeAmmo` 新增防御：换弹期间返回 `false`，保证绕过校验链的调用也不会扣弹。
+
+### 9.7 M2 阶段的拒绝行为
+
+开火（`Server_Fire` 第 5 步）与换弹（`Server_Reload` 第 5 步）都调用 `ABattleGameMode::CanAttack`，该函数仅在 `InProgress` 阶段返回 `true`。因此 `Waiting`／`Countdown`／`Ended`／`Aborted`／`Resetting` 阶段的请求一律被拒绝，拒绝原因码为 `PhaseDenied`。
+
+- 拒绝发生在弹药、射速、换弹状态等检查**之前**，不消耗弹药、不改变状态。
+- 阶段进入 `Ended`／`Aborted`／`Resetting` 时，`ABattleCharacter::HandlePhaseExitActive` 会**主动中断进行中的换弹**，避免残留计时器在结算期间完成。
+- 该行为已实现，不依赖 M2 阶段流转的细节；阶段流转本身由他人负责。
 
 ### 9.7 新增的服务器状态（不复制）
 
@@ -448,6 +456,7 @@ M1／S3 阶段规则由 C++ 实现。Lua 规则接入点（开火、换弹、伤
 | 2026-11-15 | 新增 F05-04 服务器权威射线与命中解析：`GetServerShotOrigin`／`GetServerShotDirection`、`ECC_Visibility` 单线检测、`FBattleShotResult` 参数准备、F06 伤害提交占位；`FBattleShotResult` 定义于 `BattleTypes.h` | 新增 `FBattleShotResult`（跨 F05／F06 契约，未复制）；`ABattleCharacter` 新增两个 protected 查询函数；`PerformAuthoritativeShot` 由空实现变为射线实现；RPC 签名与校验链不变 | C++ 编译与仓库文本检查待执行；命中日志待验证 |
 | 2026-11-15 | 新增 F05-05 换弹与中断：`Server_Reload` 可靠 RPC、10 项校验链、TimerManager 计时、换满为止的弹药转移、`InterruptReload`、`Multicast_ReloadEffect`、`BattleTestReload` 调试命令；`ConsumeAmmo` 增加换弹期防御 | 新增 `Server_Reload`／`Multicast_ReloadEffect`／`Server_Reload_Validate`／`InterruptReload`；组件新增 `BeginReload`／`CompleteReload`／`CancelReload`／`RecordAcceptedReload`／`GetLastAcceptedReloadId`；拒绝原因码追加三项；开火链未改动 | C++ 编译与仓库文本检查待执行；换弹与中断待 `BattleTestReload` 验证 |
 | 2026-11-24 | F04-04 在开火校验链第 11 步新增冲刺互斥（射速后、去重前），拒绝码 `Sprinting`；校验链由 13 项扩为 14 项 | 新增拒绝原因 `Sprinting`；开火链新增一步，其余顺序不变；冲刺契约见 [CharacterMovement.md](CharacterMovement.md) | C++ 编译与仓库文本检查待执行；冲刺中开火拒绝待验证 |
+| 2026-11-28 | M2 阶段清理：阶段离开 `InProgress` 时主动中断换弹；补文档说明开火与换弹在非 `InProgress` 阶段均以 `PhaseDenied` 拒绝 | 换弹中断新增触发源 `PhaseExit`；既有 RPC 签名与校验顺序不变 | C++ 编译与仓库文本检查待执行；阶段拒绝与中断待 `BattleTestPhase` 验证 |
 | 2026-11-15 | 补充 `ClientRoundId` 来源约束：必须取自复制的 `ABattleGameState`，不得从 GameMode 读取 | 契约说明补充，无代码变更 | F05-03 双端验证通过（RoundId=1 双方一致、扣弹正常、Multicast 双端接收） |
 | 2026-11-15 | `BattleTestFire` 从 `ABattleCharacter` 移到 `ABattlePlayerController`（Exec 需挂在 PC 上才能被控制台接收）；新增 `ABattleCharacter::DebugTriggerFire()`；拒绝日志由 `Verbose` 提升为 `Warning` | 新增 `ABattlePlayerController::BattleTestFire`、`ABattleCharacter::DebugTriggerFire`；移除 `ABattleCharacter::BattleTestFire` | 待编译与 PIE 验证 |
 | 2026-11-17 | 将拥有者可见弹药与换弹复制状态接入正式 Battle HUD | 四个状态字段改为统一 RepNotify；新增 `OnWeaponStateChanged`、`ABattleCharacter::GetWeaponReloadDuration()`；不改变服务器写入权威和现有 RPC | UE 5.8 `Project_FPSEditor Win64 Development` 编译通过；双端 PIE 待验证 |
